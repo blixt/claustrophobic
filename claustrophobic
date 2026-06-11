@@ -3,24 +3,12 @@
 #   ✻ Claustrophobic
 #   multi-account harness for Claude Code. when the walls close in, switch rooms.
 #
-#   One self-contained script. Share it: copy this file anywhere and run
-#       bash claustrophobic setup
-#
-#   What it does:
-#     - keeps each Claude login in its own room (CLAUDE_CONFIG_DIR profile)
-#     - shares sessions, settings, skills & plugins across rooms via symlinks,
-#       so `cr` resumes any session no matter which account started it
-#     - installs `c` / `cr` / `cw` / `cl` shell bindings
-#     - `c 2` launches as account 2; plain `c` picks the account with the
-#       most air left (lowest 5h usage)
-#     - a statusline that shows which room you're in and how stuffy it is,
-#       and doubles as the usage collector for `cl`
-#
-#   Requires: bash 3.2+, claude CLI, python3 (or node) for JSON.
+#   Self-contained: copy this file anywhere and run `bash claustrophobic setup`.
+#   Requires bash 3.2+, the claude CLI, and python3 or node.
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.3"
+CLAUSTRO_VERSION="1.0.5"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
@@ -59,8 +47,7 @@ die() { err "$@"; exit 1; }
 note() { printf '%s✻%s %s\n' "$C_OR" "$C_RST" "$*"; }
 
 # ----------------------------------------------------------- json runtime ----
-# All JSON work goes through one helper program, available in python3 and
-# node flavors so the script runs on any common macOS dev setup.
+# One helper program in python3 and node flavors; whichever the machine has.
 
 read -r -d '' PY_HELPER <<'PYEOF' || true
 import json, os, sys
@@ -270,7 +257,7 @@ fmt_clock() { # epoch -> HH:MM (BSD date first, GNU fallback)
     date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '?'
 }
 
-rel_time() { # epoch -> "2m ago" etc
+rel_time() {
     local d=$(( $(now_s) - $1 ))
     if   [ "$d" -lt 60 ];     then printf 'now'
     elif [ "$d" -lt 3600 ];   then printf '%dm ago' $(( d / 60 ))
@@ -279,20 +266,21 @@ rel_time() { # epoch -> "2m ago" etc
     fi
 }
 
-usage_bar() { # pct -> 5-cell bar
+usage_bar() {
     local pct=$1 filled i out=''
     filled=$(( (pct + 10) / 20 ))
     [ "$filled" -gt 5 ] && filled=5
     [ "$filled" -lt 0 ] && filled=0
     i=0
     while [ "$i" -lt 5 ]; do
-        if [ "$i" -lt "$filled" ]; then out="$out✦"; else out="$out✧"; fi
+        # ${out} braced: bash 3.2 corrupts a multibyte char right after $var
+        if [ "$i" -lt "$filled" ]; then out="${out}✦"; else out="${out}✧"; fi
         i=$(( i + 1 ))
     done
     printf '%s' "$out"
 }
 
-heat_color() { # pct -> color escape
+heat_color() {
     local pct=$1
     if   [ "$pct" -ge 85 ]; then printf '%s' "$C_RED"
     elif [ "$pct" -ge 60 ]; then printf '%s' "$C_YEL"
@@ -300,7 +288,7 @@ heat_color() { # pct -> color escape
     fi
 }
 
-vibe() { # pct -> how's the air in this room?
+vibe() { # pct -> air phrase
     local pct=$1
     if   [ "$pct" -lt 0 ];  then printf 'fresh air'
     elif [ "$pct" -lt 40 ]; then printf 'plenty of air'
@@ -413,7 +401,7 @@ resolve_account_from_env() {
     default_account_id
 }
 
-bootstrap_default_account() { # register existing ~/.claude login, if any
+bootstrap_default_account() {
     [ -n "$(list_ids)" ] && return 0
     local email sub
     email=$(claustro_json get "$HOME/.claude.json" oauthAccount.emailAddress 2>/dev/null)
@@ -596,14 +584,15 @@ cmd_status() {
         plan=${A_LABEL:--}
         [ ${#plan} -gt 10 ] && plan="${plan:0:9}…"
 
+        # bar glyphs are mixed-byte-width; pad fields by hand, not printf %-N
         if [ "$eff" -lt 0 ]; then
-            fivec="${C_DIM}$(printf '%-12s' '✧✧✧✧✧ fresh')${C_RST}"
+            fivec="${C_DIM}$(usage_bar 0) fresh ${C_RST}"
             wkc="${C_DIM}$(printf '%-5s' '-')${C_RST}"
             resets=$(printf '%-7s' '-')
             seen="${C_DIM}never${C_RST}"
         else
             hc=$(heat_color "$eff")
-            fivec="${hc}$(printf '%-12s' "$(usage_bar "$eff") ${eff}%")${C_RST}"
+            fivec="${hc}$(usage_bar "$eff") $(printf '%-6s' "${eff}%")${C_RST}"
             if [ -n "$S_SEVEN_PCT" ] && { [ -z "$S_SEVEN_RESET" ] || [ "$(now_s)" -lt "$S_SEVEN_RESET" ]; }; then
                 wkc="$(heat_color "$S_SEVEN_PCT")$(printf '%-5s' "${S_SEVEN_PCT}%")${C_RST}"
             else

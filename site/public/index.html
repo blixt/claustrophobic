@@ -37,9 +37,8 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* the room: concentric walls, forever closing in.
-   One SVG layer animated with transform only, so the whole thing
-   lives on the compositor. */
+/* concentric walls forever closing in: one SVG layer, transform only,
+   so the animation stays on the compositor */
 .walls {
     position: fixed;
     inset: 0;
@@ -54,9 +53,8 @@ body {
     will-change: transform;
 }
 @media (prefers-reduced-motion: no-preference) {
-    /* piecewise-linear approximation of exponential scale, so the walls
-       move at constant speed and the loop is seamless (one band pair per
-       cycle: scale ends at 1/q^2 for band ratio q = 2) */
+    /* exponential scale approximated piecewise: constant wall speed,
+       seamless loop (one band pair per cycle, band ratio 2) */
     .tunnel { animation: closein 22s linear infinite; }
     @keyframes closein {
         0%    { transform: scale(1); }
@@ -70,9 +68,8 @@ body {
         100%  { transform: scale(0.25); }
     }
 }
-/* the outermost wall carries a faint border. One element, transform and
-   opacity only, period-locked to the tunnel (a wall crosses the viewport
-   edge every half cycle), fading out just before the next wall arrives. */
+/* border on the outermost wall: transform and opacity only, period-locked
+   to half a tunnel cycle so it fades out as the next wall arrives */
 .wallborder {
     position: absolute;
     inset: 0;
@@ -91,9 +88,8 @@ body {
         100% { transform: scale(0.5);    opacity: 0; }
     }
 }
-/* static overlay: the center dissolves into one color (so small rooms never
-   show) and the edges darken. Kept out of the animated layer so the loop
-   stays seamless. */
+/* center dissolve and edge vignette, outside the animated layer so the
+   loop seam stays invisible */
 .walls::after {
     content: "";
     position: absolute;
@@ -156,7 +152,6 @@ h2 {
 }
 h2::before { content: "## "; color: var(--faint); }
 
-/* code + terminal blocks */
 .block {
     position: relative;
     background: var(--bg-raised);
@@ -192,7 +187,6 @@ button.copy {
 button.copy:hover { color: var(--crail); border-color: var(--crail); }
 button.copy.done { color: var(--green); border-color: var(--green); }
 
-/* fake terminal */
 .term { padding-top: 2.2rem; }
 .term::before {
     content: "● ● ●";
@@ -219,7 +213,6 @@ button.copy.done { color: var(--green); border-color: var(--green); }
     white-space: pre;
 }
 
-/* terminal demo animation */
 .tlines .ln, .statusline .ln {
     white-space: pre;
     font-size: 0.86rem;
@@ -241,7 +234,6 @@ button.copy.done { color: var(--green); border-color: var(--green); }
 #demo.playing .rv.on { visibility: visible; }
 #demo .cur.on { visibility: visible; }
 
-/* lists & tables */
 ol.how { counter-reset: n; list-style: none; }
 ol.how li {
     counter-increment: n;
@@ -286,7 +278,6 @@ footer {
     flex-wrap: wrap;
 }
 
-/* entrance */
 @media (prefers-reduced-motion: no-preference) {
     main > * { opacity: 0; animation: rise 0.7s ease-out forwards; }
     main > *:nth-child(1) { animation-delay: 0s; }
@@ -354,11 +345,17 @@ https://claustrophobic.xyz/llms.txt and follow it.</span></pre>
 <div class="ln rv"> </div>
 <div class="ln rv"><span class="prompt">$ </span><span id="ty2">c</span><span class="cur" id="cu2"></span></div>
 <div class="ln rv"><span class="t-or">✻ room 2</span> <span class="t-mid">· ai-002@example.com · 5h 12% · plenty of air</span></div>
+<div class="ln rv"> </div>
+<div class="ln rv"> <span class="t-or">▟██████▙</span></div>
+<div class="ln rv"> <span class="t-or">██▌██▌██</span>   <span class="t-b">Claude Code</span> <span class="t-mid">v2.1.173</span></div>
+<div class="ln rv"> <span class="t-or">▜██████▛</span>   <span class="t-mid">Fable 5 with high effort · Claude Max</span></div>
+<div class="ln rv">  <span class="t-or">▐▌  ▐▌</span>    <span class="t-mid">~/my-app</span></div>
 </div>
 <div class="statusline">
-<div class="ln rv"><span class="t-dim">claude opens; the statusline keeps watch:</span></div>
-<div class="ln rv"><span class="t-dim">❯ Try "refactor docService.ts"</span></div>
-<div class="ln rv"><span class="t-or">✻ 2</span> <span class="t-or">ai-002</span> <span class="t-dim">│</span> <span class="t-mid">5h</span> <span class="t-grn">✦✧✧✧✧ 12%</span> <span class="t-dim">→ 17:00</span> <span class="t-dim">│</span> <span class="t-mid">wk</span> <span class="t-grn">8%</span> <span class="t-dim">│ Opus 4.8 │ my-app</span></div>
+<div class="ln rv"><span class="t-b">❯</span> <span class="t-mid">Try "refactor docService.ts"</span></div>
+<div class="ln rv"> </div>
+<div class="ln rv"><span class="t-or">✻ 2</span> <span class="t-or">ai-002</span> <span class="t-dim">│</span> <span class="t-mid">5h</span> <span class="t-grn">✦✧✧✧✧ 12%</span> <span class="t-dim">→ 17:00</span> <span class="t-dim">│</span> <span class="t-mid">wk</span> <span class="t-grn">8%</span> <span class="t-dim">│ Fable 5 │ my-app</span></div>
+<div class="ln rv"><span class="t-red">▶▶ bypass permissions on</span> <span class="t-mid">(shift+tab to cycle) · ← for agents</span></div>
 </div>
 </div>
 
@@ -406,11 +403,9 @@ run <code>claustrophobic statusline uninstall</code>, delete
 
 </main>
 <script>
-// concentric wall bands, geometrically spaced so the loop is self-similar
 const tunnel = document.querySelector(".tunnel");
 const ns = "http://www.w3.org/2000/svg";
-// boundaries on powers of 2 so a wall sits exactly at the viewport edge
-// when each cycle starts (and the border element lands on it)
+// powers of 2 put a wall exactly at the viewport edge at cycle start
 let s = 8;
 let i = 0;
 while (s > 0.02) {
@@ -426,8 +421,8 @@ while (s > 0.02) {
     i += 1;
 }
 
-// terminal demo: idle with a blinking cursor, play once when it nears
-// center, replayable. One rAF-driven timeline, no setTimeout pileup.
+// the demo idles on a blinking cursor, then runs a rAF timeline once it
+// nears center; replay resets and reruns it
 const demo = document.getElementById("demo");
 if (demo && !matchMedia("(prefers-reduced-motion: reduce)").matches && "IntersectionObserver" in window) {
     const ty1 = document.getElementById("ty1");
@@ -436,6 +431,7 @@ if (demo && !matchMedia("(prefers-reduced-motion: reduce)").matches && "Intersec
     const cu2 = document.getElementById("cu2");
     const rv = [...demo.querySelectorAll(".rv")];
 
+    const show = (...idx) => () => { for (const i of idx) { rv[i].classList.add("on"); } };
     const timeline = [
         [400,  () => { ty1.textContent = "c"; }],
         [650,  () => { ty1.textContent = "cl"; }],
@@ -444,9 +440,10 @@ if (demo && !matchMedia("(prefers-reduced-motion: reduce)").matches && "Intersec
         [3300, () => { rv[8].classList.add("on"); cu2.classList.add("on"); }],
         [3950, () => { ty2.textContent = "c"; }],
         [4650, () => { cu2.classList.remove("on"); rv[9].classList.add("on"); }],
-        [5650, () => rv[10].classList.add("on")],
-        [6050, () => rv[11].classList.add("on")],
-        [6400, () => rv[12].classList.add("on")],
+        [5500, show(10, 11, 12, 13, 14)],
+        [6300, show(15, 16)],
+        [6700, show(17)],
+        [6850, show(18)],
     ];
 
     let raf = 0;
