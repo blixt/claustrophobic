@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 #   ✻ Claustrophobic
-#   multi-account harness for Claude Code — for when the walls close in.
+#   multi-account harness for Claude Code. when the walls close in, switch rooms.
 #
 #   One self-contained script. Share it: copy this file anywhere and run
 #       bash claustrophobic setup
@@ -20,7 +20,7 @@
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.1"
+CLAUSTRO_VERSION="1.0.2"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
@@ -440,7 +440,7 @@ cmd_launch() {
     fi
 
     if [ -z "$acct" ]; then
-        acct=$(autopick) || die "no accounts yet — run: ${C_BOLD}cl setup${C_RST}"
+        acct=$(autopick) || die "no accounts yet. run: ${C_BOLD}cl setup${C_RST}"
         read_account "$acct"
         local eff
         compute_eff "$acct"
@@ -509,19 +509,36 @@ cmd_statusline_render() {
         } > "$USAGE_DIR/$id.snapshot"
     fi
 
+    # fresh sessions get no rate-limit data until the first API call;
+    # fall back to the room's last snapshot, marked with ~
+    local cached=''
+    if [ -z "$SL_FIVE_PCT" ] && [[ $id =~ ^[0-9]+$ ]] && read_snapshot "$id" && [ -n "$S_FIVE_PCT" ]; then
+        cached='~'
+        if [ -n "$S_FIVE_RESET" ] && [ "$(now_s)" -ge "$S_FIVE_RESET" ]; then
+            SL_FIVE_PCT=0 SL_FIVE_RESET=''
+        else
+            SL_FIVE_PCT=$S_FIVE_PCT SL_FIVE_RESET=$S_FIVE_RESET
+        fi
+        if [ -n "$S_SEVEN_RESET" ] && [ "$(now_s)" -ge "$S_SEVEN_RESET" ]; then
+            SL_SEVEN_PCT=0 SL_SEVEN_RESET=''
+        else
+            SL_SEVEN_PCT=$S_SEVEN_PCT SL_SEVEN_RESET=$S_SEVEN_RESET
+        fi
+    fi
+
     local sep="${C_DIM} │ ${C_RST}" five wk
     if [ -n "$SL_FIVE_PCT" ]; then
         local hc reset_part=''
         hc=$(heat_color "$SL_FIVE_PCT")
         [ -n "$SL_FIVE_RESET" ] && reset_part="${C_DIM} → $(fmt_clock "$SL_FIVE_RESET")${C_RST}"
-        five="${C_DIM}5h${C_RST} ${hc}$(usage_bar "$SL_FIVE_PCT") ${SL_FIVE_PCT}%${C_RST}${reset_part}"
+        five="${C_DIM}5h${C_RST} ${hc}$(usage_bar "$SL_FIVE_PCT") ${cached}${SL_FIVE_PCT}%${C_RST}${reset_part}"
     else
-        five="${C_DIM}5h —${C_RST}"
+        five="${C_DIM}5h -${C_RST}"
     fi
     if [ -n "$SL_SEVEN_PCT" ]; then
-        wk="${C_DIM}wk${C_RST} $(heat_color "$SL_SEVEN_PCT")${SL_SEVEN_PCT}%${C_RST}"
+        wk="${C_DIM}wk${C_RST} $(heat_color "$SL_SEVEN_PCT")${cached}${SL_SEVEN_PCT}%${C_RST}"
     else
-        wk="${C_DIM}wk —${C_RST}"
+        wk="${C_DIM}wk -${C_RST}"
     fi
 
     local tail=''
@@ -553,11 +570,11 @@ cmd_status() {
     local ids
     ids=$(list_ids)
     if [ -z "$ids" ]; then
-        note "no rooms yet — run ${C_BOLD}cl setup${C_RST} to get started"
+        note "no rooms yet. run ${C_BOLD}cl setup${C_RST} to get started"
         exit 0
     fi
 
-    printf '\n  %s✻ Claustrophobic%s %s— when the walls close in, switch rooms%s\n\n' \
+    printf '\n  %s✻ Claustrophobic%s %s· when the walls close in, switch rooms%s\n\n' \
         "$C_OR$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
     printf '  %s%-4s %-28s %-10s %-12s %-5s %-7s %s%s\n' \
         "$C_DIM" 'ID' 'ACCOUNT' 'PLAN' '5H' 'WK' 'RESETS' 'SEEN' "$C_RST"
@@ -605,7 +622,7 @@ cmd_status() {
             "$fivec" "$wkc" "$resets" "$seen"
     done
 
-    printf '\n  %sc [id]%s launch %s· id optional — picks the airiest room%s' "$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
+    printf '\n  %sc [id]%s launch %s· omit the id for the airiest room%s' "$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
     printf '   %scl add%s new room   %scl help%s more\n\n' "$C_BOLD" "$C_RST" "$C_BOLD" "$C_RST"
 }
 
@@ -639,14 +656,14 @@ cmd_add() {
     email=$(claustro_json get "$dir/.claude.json" oauthAccount.emailAddress 2>/dev/null)
     if [ -z "$email" ]; then
         write_account "$id" '(not logged in)' '' "$dir"
-        err "no login detected — room $id is reserved; finish with: ${C_BOLD}cl relogin $id${C_RST}"
+        err "no login detected. room $id is reserved; finish with: ${C_BOLD}cl relogin $id${C_RST}"
         return 1
     fi
 
     for dup in $(list_ids); do
         read_account "$dup"
         if [ "$A_EMAIL" = "$email" ]; then
-            err "heads-up: $email is already room $dup — two rooms on one account share limits (and may fight over the Keychain)"
+            err "heads-up: $email is already room $dup; two rooms on one account share limits and fight over the Keychain"
         fi
     done
 
@@ -658,7 +675,7 @@ cmd_add() {
 
     write_account "$id" "$email" "$label" "$dir"
     printf '\n'
-    note "room $id ready — ${C_BOLD}$email${C_RST}${label:+ ${C_DIM}($label)${C_RST}}  ·  launch with: ${C_BOLD}c $id${C_RST}"
+    note "room $id ready: ${C_BOLD}$email${C_RST}${label:+ ${C_DIM}($label)${C_RST}}  ·  launch with: ${C_BOLD}c $id${C_RST}"
 }
 
 cmd_relogin() {
@@ -666,7 +683,7 @@ cmd_relogin() {
     [ -n "$id" ] || die "usage: cl relogin <id>"
     read_account "$id" || die "no such room: $id"
     if [ -z "$A_CONFIG_DIR" ]; then
-        note "room $id is your default ~/.claude login — just run ${C_BOLD}claude${C_RST} and ${C_BOLD}/login${C_RST}"
+        note "room $id is your default ~/.claude login. just run ${C_BOLD}claude${C_RST} and ${C_BOLD}/login${C_RST}"
         return 0
     fi
     note "log in, then exit Claude to come back"
@@ -683,7 +700,7 @@ cmd_rm() {
     local id=${1:-}
     [ -n "$id" ] || die "usage: cl rm <id>"
     read_account "$id" || die "no such room: $id"
-    [ -z "$A_CONFIG_DIR" ] && die "room $id is your default ~/.claude login — claustrophobic won't demolish that one"
+    [ -z "$A_CONFIG_DIR" ] && die "room $id is your default ~/.claude login. claustrophobic won't demolish it"
     printf 'demolish room %s (%s)? [y/N] ' "$id" "$A_EMAIL"
     read -r ans </dev/tty
     case "$ans" in
@@ -739,7 +756,7 @@ install_rc_block() { # rcfile
     fi
     grep -q 'claustrophobic.*shell-init' "$rc" 2>/dev/null && return 0
     {
-        printf '\n# >>> claustrophobic — when the walls close in, switch rooms >>>\n'
+        printf '\n# >>> claustrophobic: when the walls close in, switch rooms >>>\n'
         printf 'eval "$("$HOME/.claustrophobic/bin/claustrophobic" shell-init)"\n'
         printf '# <<< claustrophobic <<<\n'
     } >> "$rc"
@@ -812,11 +829,11 @@ cmd_setup() {
 cmd_help() {
     cat <<EOF
 
-  ${C_OR}${C_BOLD}✻ Claustrophobic${C_RST} ${CLAUSTRO_VERSION} ${C_DIM}— multi-account harness for Claude Code${C_RST}
+  ${C_OR}${C_BOLD}✻ Claustrophobic${C_RST} ${CLAUSTRO_VERSION} ${C_DIM}· multi-account harness for Claude Code${C_RST}
   ${C_DIM}because the context window isn't the only thing closing in${C_RST}
 
   ${C_BOLD}launching${C_RST}
-    c  [id] [args...]     claude  ${C_DIM}(id optional — auto-picks the airiest room)${C_RST}
+    c  [id] [args...]     claude  ${C_DIM}(omit the id to auto-pick the airiest room)${C_RST}
     cr [id] [args...]     claude --resume
     cw [id] [args...]     claude --worktree
     cl <id>               same as c <id>
@@ -834,7 +851,7 @@ cmd_help() {
     cl statusline install|uninstall
     cl help · cl version
 
-  ${C_DIM}switching mid-task: exit claude, then \`cr\` — sessions are shared across
+  ${C_DIM}switching mid-task: exit claude, then \`cr\`. sessions are shared across
   rooms, so any account can resume any session. usage data refreshes whenever
   a room's statusline is on screen; idle rooms show their last known air.${C_RST}
 
@@ -857,7 +874,7 @@ case "${1:-status}" in
             *)             cmd_statusline_render ;;
         esac ;;
     shell-init)            cmd_shell_init ;;
-    install)               cmd_install; note "installed — run ${C_BOLD}cl setup${C_RST} to add accounts" ;;
+    install)               cmd_install; note "installed. run ${C_BOLD}cl setup${C_RST} to add accounts" ;;
     setup)                 cmd_setup ;;
     help|-h|--help)        cmd_help ;;
     version|--version)     printf 'claustrophobic %s\n' "$CLAUSTRO_VERSION" ;;

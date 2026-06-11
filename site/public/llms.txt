@@ -1,4 +1,4 @@
-# Claustrophobic — setup instructions for AI agents
+# Claustrophobic: setup instructions for AI agents
 
 Claustrophobic is a multi-account harness for Claude Code: it isolates several
 Claude subscription logins in separate CLAUDE_CONFIG_DIR profiles ("rooms"),
@@ -24,7 +24,7 @@ If a user asks you to install or set up Claustrophobic on their machine:
 
    ~/.claustrophobic/bin/claustrophobic statusline install
 
-3. Adding more accounts CANNOT be automated — it requires the official Claude
+3. Adding more accounts CANNOT be automated: it requires the official Claude
    login flow in a browser. Tell the user to run, in their own terminal,
    once per extra account:
 
@@ -39,7 +39,7 @@ Usage summary for the user:
 - `c` launches Claude Code on the account with the lowest 5-hour usage
 - `c 2` forces account 2; same for `cr` (resume) and `cw` (worktree)
 - `cl` lists accounts and usage; `cl help` shows everything
-- Mid-task account switch: exit Claude, run `cr` — sessions are shared
+- Mid-task account switch: exit Claude, then run `cr`. Sessions are shared
   across accounts, so the session resumes on the freshest account.
 
 Requirements: macOS or Linux, bash 3.2+, the claude CLI, python3 or node.
@@ -47,4 +47,4 @@ Default launch flags include --dangerously-skip-permissions; change
 CLAUDE_BASE_ARGS in ~/.claustrophobic/config if undesired.
 
 Note for users: running multiple subscription accounts may be restricted by
-Anthropic's consumer terms — they should verify that themselves.
+Anthropic's consumer terms. They should verify that themselves.

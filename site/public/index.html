@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claustrophobic — multi-account harness for Claude Code</title>
-<meta name="description" content="Run several Claude subscriptions side by side. One keystroke to launch on the account with the most air left; sessions follow you across accounts.">
+<meta name="description" content="Run several Claude subscriptions side by side. One keystroke launches Claude Code on the account with the most air left.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext x='16' y='24' font-size='24' text-anchor='middle' fill='%23d97757'%3E%E2%9C%BB%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,6 +12,7 @@
 <style>
 :root {
     --bg: #161210;
+    --bg-band: #1b1511;
     --bg-raised: #1d1815;
     --ink: #e8ddd0;
     --dim: #8d8074;
@@ -21,7 +22,6 @@
     --green: #97b585;
     --yellow: #d4b16a;
     --red: #cf6f63;
-    --frame: 14px;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -35,33 +35,47 @@ body {
     font-size: 15px;
     line-height: 1.75;
     -webkit-font-smoothing: antialiased;
-    background-image: radial-gradient(ellipse 120% 80% at 50% -10%, #221a14 0%, var(--bg) 60%);
 }
 
-/* the room — a frame that slowly breathes in */
+/* the room: concentric walls, forever closing in.
+   One SVG layer animated with transform only, so the whole thing
+   lives on the compositor. */
 .walls {
     position: fixed;
-    inset: var(--frame);
-    border: 1px solid var(--faint);
+    inset: 0;
+    z-index: 0;
     pointer-events: none;
-    z-index: 10;
-    animation: breathe 11s ease-in-out infinite;
+    overflow: hidden;
+}
+.walls svg { width: 100%; height: 100%; display: block; }
+.tunnel {
+    transform-origin: 50% 50%;
+    transform-box: view-box;
+    will-change: transform;
+}
+@media (prefers-reduced-motion: no-preference) {
+    /* piecewise-linear approximation of exponential scale, so the walls
+       move at constant speed and the loop is seamless (one band pair per
+       cycle: scale ends at 1/q^2 for band ratio q = 1.13) */
+    .tunnel { animation: closein 10s linear infinite; }
+    @keyframes closein {
+        0%   { transform: scale(1); }
+        25%  { transform: scale(0.9407); }
+        50%  { transform: scale(0.8849); }
+        75%  { transform: scale(0.8325); }
+        100% { transform: scale(0.7831); }
+    }
 }
 .walls::after {
     content: "";
     position: absolute;
-    inset: 4px;
-    border: 1px solid rgba(75, 65, 56, 0.25);
-}
-@keyframes breathe {
-    0%, 100% { inset: var(--frame); }
-    50% { inset: calc(var(--frame) + 7px); }
-}
-@media (prefers-reduced-motion: reduce) {
-    .walls { animation: none; }
+    inset: 0;
+    background: radial-gradient(ellipse 120% 90% at 50% 20%, rgba(0,0,0,0) 30%, rgba(10,7,5,0.5) 100%);
 }
 
 main {
+    position: relative;
+    z-index: 1;
     max-width: 680px;
     margin: 0 auto;
     padding: 9rem 2rem 7rem;
@@ -74,6 +88,7 @@ h1 {
     font-weight: 400;
     letter-spacing: -0.03em;
     color: var(--ink);
+    text-wrap: balance;
 }
 h1 .spark { margin-right: 0.35rem; }
 
@@ -85,10 +100,11 @@ h1 .spark { margin-right: 0.35rem; }
     color: var(--dim);
     margin: 0.4rem 0 2.4rem;
     letter-spacing: 0.01em;
+    text-wrap: balance;
 }
 .tagline em { color: var(--crail); font-style: italic; }
 
-p { color: var(--dim); margin-bottom: 1.2rem; }
+p { color: var(--dim); margin-bottom: 1.2rem; text-wrap: pretty; }
 p strong { color: var(--ink); font-weight: 400; }
 a { color: var(--crail); text-decoration: none; border-bottom: 1px solid rgba(217, 119, 87, 0.35); }
 a:hover { color: var(--crail-bright); border-bottom-color: var(--crail-bright); }
@@ -174,6 +190,7 @@ ol.how li {
     padding-left: 2.4rem;
     position: relative;
     color: var(--dim);
+    text-wrap: pretty;
 }
 ol.how li::before {
     content: counter(n, decimal-leading-zero);
@@ -212,37 +229,35 @@ footer {
 
 /* entrance */
 @media (prefers-reduced-motion: no-preference) {
-    .rise { opacity: 0; transform: translateY(10px); animation: rise 0.7s ease-out forwards; }
-    .rise:nth-child(2) { animation-delay: 0.08s; }
-    @keyframes rise { to { opacity: 1; transform: none; } }
     main > * { opacity: 0; animation: rise 0.7s ease-out forwards; }
     main > *:nth-child(1) { animation-delay: 0s; }
     main > *:nth-child(2) { animation-delay: 0.06s; }
     main > *:nth-child(3) { animation-delay: 0.12s; }
     main > *:nth-child(4) { animation-delay: 0.18s; }
     main > *:nth-child(n+5) { animation-delay: 0.24s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 }
 
 @media (max-width: 560px) {
     main { padding: 5.5rem 1.3rem 4rem; }
     h1 { font-size: 1.6rem; }
     .tagline { font-size: 1.25rem; }
-    :root { --frame: 8px; }
 }
 </style>
 </head>
 <body>
-<div class="walls" aria-hidden="true"></div>
+<div class="walls" aria-hidden="true">
+<svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="tunnel"></g></svg>
+</div>
 <main>
 
 <h1><span class="spark">✻</span>Claustrophobic</h1>
 <p class="tagline">for when <em>the walls close in</em>, switch rooms.</p>
 
-<p>A multi-account harness for <strong>Claude Code</strong>. Run several Claude
-subscriptions side by side: one keystroke launches on the account with the
-most air left, and your sessions, settings, skills and plugins follow you
-across accounts — switching mid-task is just <strong>exit, <code>cr</code>,
-keep going</strong>.</p>
+<p>A multi-account harness for <strong>Claude Code</strong>. <code>c</code>
+launches Claude on the account with the most air left. Sessions, settings and
+skills are shared between accounts, so switching mid-task is
+<strong>exit, <code>cr</code>, keep going</strong>.</p>
 
 <h2 id="install">Install</h2>
 
@@ -251,10 +266,7 @@ keep going</strong>.</p>
 <pre><span class="prompt">$ </span><span class="cmd">curl -fsSL https://claustrophobic.xyz/install | bash</span></pre>
 </div>
 
-<p>Setup registers your current <code>~/.claude</code> login as room 1,
-installs the <code>c</code> / <code>cr</code> / <code>cw</code> /
-<code>cl</code> bindings (existing aliases are commented out, with a backup),
-offers the statusline, and walks you through adding more accounts via the
+<p>Setup keeps your current login as room 1 and adds more rooms through the
 official <code>claude</code> login. Safe to re-run. Prefer to read first?
 The whole thing is <a href="/claustrophobic">one bash script</a>.</p>
 
@@ -271,7 +283,7 @@ https://claustrophobic.xyz/llms.txt and follow it.</span></pre>
 <div class="block term">
 <pre><span class="prompt">$ </span><span class="cmd">cl</span>
 
-  <span class="t-or">✻ Claustrophobic</span> <span class="t-dim">— when the walls close in, switch rooms</span>
+  <span class="t-or">✻ Claustrophobic</span> <span class="t-dim">· when the walls close in, switch rooms</span>
 
   <span class="t-dim">ID  ACCOUNT             PLAN     5H          WK   SEEN</span>
    <span class="t-b">1</span>  you@example.com     <span class="t-mid">Max 20x</span>  <span class="t-red">▓▓▓▓░ 82%</span>   <span class="t-yel">61%</span>  <span class="t-mid">2m ago</span>
@@ -282,28 +294,25 @@ https://claustrophobic.xyz/llms.txt and follow it.</span></pre>
 </div>
 
 <table>
-<tr><td>c</td><td>launch Claude on the airiest room — lowest 5-hour usage wins</td></tr>
-<tr><td>c 2</td><td>launch as account 2 (any room number works: <code>cr 2</code>, <code>cw 3</code>, …)</td></tr>
-<tr><td>cr</td><td>resume — sessions are shared, any account can pick up any session</td></tr>
+<tr><td>c</td><td>launch on the airiest room (lowest 5h usage wins)</td></tr>
+<tr><td>c 2</td><td>launch as account 2; same for <code>cr 2</code>, <code>cw 3</code></td></tr>
+<tr><td>cr</td><td>resume any session, from any account</td></tr>
 <tr><td>cw</td><td>launch in a git worktree</td></tr>
-<tr><td>cl</td><td>the table above · <code>cl add</code> · <code>cl label 2 "Max 20x"</code> · <code>cl help</code></td></tr>
+<tr><td>cl</td><td>the table above · <code>cl add</code> · <code>cl help</code></td></tr>
 </table>
 
 <h2 id="how">How it works</h2>
 
 <ol class="how">
-<li><strong>Every account gets its own room.</strong> Extra logins live in
-isolated <code>CLAUDE_CONFIG_DIR</code> profiles under
-<code>~/.claustrophobic/profiles/</code> — credentials never touch each
-other, and the official Claude CLI does the logging in.</li>
-<li><strong>The rooms share furniture.</strong> Sessions, memory,
-<code>settings.json</code>, skills, agents and plugins are symlinked back to
-your main <code>~/.claude</code>, so every room feels identical and
-<code>cr</code> resumes any session from any account.</li>
-<li><strong>The statusline is the sensor.</strong> Each render snapshots that
-account's rate-limit usage; <code>cl</code> and the auto-picker read the
-snapshots. Idle rooms show their last known air, rooms past their reset
-count as fresh.</li>
+<li><strong>Every account gets its own room.</strong> Logins live in separate
+<code>CLAUDE_CONFIG_DIR</code> profiles, and the official Claude CLI does the
+logging in.</li>
+<li><strong>The rooms share furniture.</strong> Sessions, settings, skills and
+plugins are symlinked to your main <code>~/.claude</code>, so <code>cr</code>
+resumes any session from any account.</li>
+<li><strong>The statusline is the sensor.</strong> Every render snapshots that
+room's rate limits for <code>cl</code> and the auto-picker. Idle rooms show
+their last known air.</li>
 </ol>
 
 <h2 id="fine-print">Fine print</h2>
@@ -311,16 +320,14 @@ count as fresh.</li>
 <p class="fine">Needs macOS or Linux, bash 3.2+, the
 <a href="https://code.claude.com">claude CLI</a>, and python3 or node.
 Accounts must be distinct emails. Launch flags default to
-<code>--dangerously-skip-permissions</code> — set during setup, change any
-time in <code>~/.claustrophobic/config</code>.</p>
+<code>--dangerously-skip-permissions</code>; change them in
+<code>~/.claustrophobic/config</code>.</p>
 
-<p class="fine">Whether running multiple subscription accounts is within
-Anthropic's consumer terms is between you and Anthropic — read them before
-buying three Max plans.</p>
+<p class="fine">Whether multiple subscription accounts sit within Anthropic's
+consumer terms is between you and Anthropic. Read them first.</p>
 
 <p class="fine">Uninstall: remove the claustrophobic block from your rc file,
-restore the commented aliases, run
-<code>claustrophobic statusline uninstall</code>, delete
+run <code>claustrophobic statusline uninstall</code>, delete
 <code>~/.claustrophobic/</code>.</p>
 
 <footer>
@@ -330,6 +337,24 @@ restore the commented aliases, run
 
 </main>
 <script>
+// concentric wall bands, geometrically spaced so the loop is self-similar
+const tunnel = document.querySelector(".tunnel");
+const ns = "http://www.w3.org/2000/svg";
+let s = 2.4;
+let i = 0;
+while (s > 0.005) {
+    const r = document.createElementNS(ns, "rect");
+    const half = 50 * s;
+    r.setAttribute("x", 50 - half);
+    r.setAttribute("y", 50 - half);
+    r.setAttribute("width", half * 2);
+    r.setAttribute("height", half * 2);
+    r.setAttribute("fill", i % 2 ? "#161210" : "#1b1511");
+    tunnel.appendChild(r);
+    s /= 1.13;
+    i += 1;
+}
+
 for (const btn of document.querySelectorAll("button.copy")) {
     btn.addEventListener("click", async () => {
         await navigator.clipboard.writeText(btn.dataset.copy);
