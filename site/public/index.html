@@ -37,8 +37,8 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* concentric walls forever closing in: one SVG layer, transform only,
-   so the animation stays on the compositor */
+/* one wall sweeps in from the viewport edge every 11s, fading to nothing
+   by the time the next enters; transform and opacity only (compositor) */
 .walls {
     position: fixed;
     inset: 0;
@@ -47,25 +47,26 @@ body {
     overflow: hidden;
 }
 .walls svg { width: 100%; height: 100%; display: block; }
-.tunnel {
+.wallband {
+    stroke: var(--bg-band);
+    fill: none;
     transform-origin: 50% 50%;
     transform-box: view-box;
-    will-change: transform;
+    will-change: transform, opacity;
+    opacity: 0.55;
+    transform: scale(1.35);
 }
 @media (prefers-reduced-motion: no-preference) {
-    /* exponential scale approximated piecewise: constant wall speed,
-       seamless loop (one band pair per cycle, band ratio 2) */
-    .tunnel { animation: closein 22s linear infinite; }
-    @keyframes closein {
-        0%    { transform: scale(1); }
-        12.5% { transform: scale(0.8409); }
-        25%   { transform: scale(0.7071); }
-        37.5% { transform: scale(0.5946); }
-        50%   { transform: scale(0.5); }
-        62.5% { transform: scale(0.4204); }
-        75%   { transform: scale(0.3536); }
-        87.5% { transform: scale(0.2973); }
-        100%  { transform: scale(0.25); }
+    /* exponential scale approximated piecewise, so the wall travels at
+       constant perceived speed; at scale 2 its inner edge sits exactly
+       on the viewport edge, so the loop seam is invisible */
+    .wallband { animation: wallsweep 11s linear infinite; }
+    @keyframes wallsweep {
+        0%   { transform: scale(2);      opacity: 1; }
+        25%  { transform: scale(1.6818); opacity: 0.76; }
+        50%  { transform: scale(1.4142); opacity: 0.52; }
+        75%  { transform: scale(1.1892); opacity: 0.26; }
+        100% { transform: scale(1);      opacity: 0; }
     }
 }
 /* border on the outermost wall: transform and opacity only, period-locked
@@ -88,15 +89,11 @@ body {
         100% { transform: scale(0.5);    opacity: 0; }
     }
 }
-/* center dissolve and edge vignette, outside the animated layer so the
-   loop seam stays invisible */
 .walls::after {
     content: "";
     position: absolute;
     inset: 0;
-    background:
-        radial-gradient(circle at 50% 50%, #191411 0%, #191411 5%, rgba(25, 20, 17, 0) 42%),
-        radial-gradient(ellipse 120% 90% at 50% 20%, rgba(0,0,0,0) 30%, rgba(10,7,5,0.5) 100%);
+    background: radial-gradient(ellipse 120% 90% at 50% 20%, rgba(0,0,0,0) 30%, rgba(10,7,5,0.5) 100%);
 }
 
 main {
@@ -297,7 +294,7 @@ footer {
 </head>
 <body>
 <div class="walls" aria-hidden="true">
-<svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="tunnel"></g></svg>
+<svg viewBox="0 0 100 100" preserveAspectRatio="none"><rect class="wallband" x="12.5" y="12.5" width="75" height="75" stroke-width="25"/></svg>
 <div class="wallborder"></div>
 </div>
 <main>
@@ -403,24 +400,6 @@ run <code>claustrophobic statusline uninstall</code>, delete
 
 </main>
 <script>
-const tunnel = document.querySelector(".tunnel");
-const ns = "http://www.w3.org/2000/svg";
-// powers of 2 put a wall exactly at the viewport edge at cycle start
-let s = 8;
-let i = 0;
-while (s > 0.02) {
-    const r = document.createElementNS(ns, "rect");
-    const half = 50 * s;
-    r.setAttribute("x", 50 - half);
-    r.setAttribute("y", 50 - half);
-    r.setAttribute("width", half * 2);
-    r.setAttribute("height", half * 2);
-    r.setAttribute("fill", i % 2 ? "#161210" : "#1c1612");
-    tunnel.appendChild(r);
-    s /= 2;
-    i += 1;
-}
-
 // the demo idles on a blinking cursor, then runs a rAF timeline once it
 // nears center; replay resets and reruns it
 const demo = document.getElementById("demo");
