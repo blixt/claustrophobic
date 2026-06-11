@@ -201,15 +201,21 @@ button.copy.done { color: var(--green); border-color: var(--green); }
 .t-yel { color: var(--yellow); }
 .t-red { color: var(--red); }
 .t-b { color: var(--ink); }
-/* quadrant blocks are missing from Fragment Mono; system monos draw them
-   with correct metrics */
-.t-salmon { color: #d78a82; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+/* terminals stretch glyphs to fill the whole cell; browsers paint only the
+   em box, leaving gaps between block-glyph rows. Stretch to the line box. */
+.t-salmon {
+    color: #d78a82;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    display: inline-block;
+    transform: scaleY(1.5);
+    transform-origin: 50% 50%;
+}
 .t-pink { color: #ef8fad; }
 
 .tlines .ln {
     white-space: pre;
     font-size: 0.8rem;
-    line-height: 1.7;
+    line-height: 1.45;
 }
 .cur {
     display: inline-block;
