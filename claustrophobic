@@ -8,7 +8,7 @@
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.5"
+CLAUSTRO_VERSION="1.0.6"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
@@ -349,6 +349,17 @@ read_snapshot() { # id -> S_FIVE_PCT S_FIVE_RESET S_SEVEN_PCT S_SEVEN_RESET S_TS
     S_SEVEN_PCT=$SEVEN_PCT S_SEVEN_RESET=$SEVEN_RESET S_TS=$TS
 }
 
+snapshot_is_fresher() { # S_* vs payload SL_*: newer reset wins, then higher pct in the same window
+    [ -n "$S_FIVE_PCT" ] || return 1
+    [ -n "$SL_FIVE_PCT" ] || return 0
+    if [ -z "$S_FIVE_RESET" ] || [ -z "$SL_FIVE_RESET" ]; then
+        return 1
+    fi
+    [ "$S_FIVE_RESET" -gt "$SL_FIVE_RESET" ] && return 0
+    [ "$S_FIVE_RESET" -eq "$SL_FIVE_RESET" ] && [ "$S_FIVE_PCT" -gt "$SL_FIVE_PCT" ] && return 0
+    return 1
+}
+
 compute_eff() { # id -> sets EFF (effective 5h pct, -1 = never seen) + S_* vars
     if ! read_snapshot "$1" || [ -z "$S_FIVE_PCT" ]; then
         EFF=-1
@@ -485,33 +496,32 @@ cmd_statusline_render() {
         id='?' name='claude'
     fi
 
-    # statusline doubles as the usage collector for `cl`
-    if [[ $id =~ ^[0-9]+$ ]] && [ -n "$SL_FIVE_PCT" ]; then
-        mkdir -p "$USAGE_DIR"
-        {
-            printf "FIVE_PCT='%s'\n" "$SL_FIVE_PCT"
-            printf "FIVE_RESET='%s'\n" "$SL_FIVE_RESET"
-            printf "SEVEN_PCT='%s'\n" "$SL_SEVEN_PCT"
-            printf "SEVEN_RESET='%s'\n" "$SL_SEVEN_RESET"
-            printf "TS='%s'\n" "$(now_s)"
-        } > "$USAGE_DIR/$id.snapshot"
-    fi
-
-    # fresh sessions get no rate-limit data until the first API call;
-    # fall back to the room's last snapshot, marked with ~
+    # The payload only reflects this session's last API call, so it goes
+    # stale in idle sessions; the per-room snapshot is shared by all of
+    # them. Render and store whichever is fresher; ~ marks adopted data.
     local cached=''
-    if [ -z "$SL_FIVE_PCT" ] && [[ $id =~ ^[0-9]+$ ]] && read_snapshot "$id" && [ -n "$S_FIVE_PCT" ]; then
-        cached='~'
-        if [ -n "$S_FIVE_RESET" ] && [ "$(now_s)" -ge "$S_FIVE_RESET" ]; then
-            SL_FIVE_PCT=0 SL_FIVE_RESET=''
-        else
+    if [[ $id =~ ^[0-9]+$ ]]; then
+        read_snapshot "$id" || true
+        if [ -n "$SL_FIVE_PCT" ] && ! snapshot_is_fresher; then
+            mkdir -p "$USAGE_DIR"
+            {
+                printf "FIVE_PCT='%s'\n" "$SL_FIVE_PCT"
+                printf "FIVE_RESET='%s'\n" "$SL_FIVE_RESET"
+                printf "SEVEN_PCT='%s'\n" "$SL_SEVEN_PCT"
+                printf "SEVEN_RESET='%s'\n" "$SL_SEVEN_RESET"
+                printf "TS='%s'\n" "$(now_s)"
+            } > "$USAGE_DIR/$id.snapshot"
+        elif [ -n "$S_FIVE_PCT" ]; then
+            cached='~'
             SL_FIVE_PCT=$S_FIVE_PCT SL_FIVE_RESET=$S_FIVE_RESET
-        fi
-        if [ -n "$S_SEVEN_RESET" ] && [ "$(now_s)" -ge "$S_SEVEN_RESET" ]; then
-            SL_SEVEN_PCT=0 SL_SEVEN_RESET=''
-        else
             SL_SEVEN_PCT=$S_SEVEN_PCT SL_SEVEN_RESET=$S_SEVEN_RESET
         fi
+    fi
+    if [ -n "$SL_FIVE_PCT" ] && [ -n "$SL_FIVE_RESET" ] && [ "$(now_s)" -ge "$SL_FIVE_RESET" ]; then
+        cached='~' SL_FIVE_PCT=0 SL_FIVE_RESET=''
+    fi
+    if [ -n "$SL_SEVEN_PCT" ] && [ -n "$SL_SEVEN_RESET" ] && [ "$(now_s)" -ge "$SL_SEVEN_RESET" ]; then
+        cached='~' SL_SEVEN_PCT=0 SL_SEVEN_RESET=''
     fi
 
     local sep="${C_DIM} │ ${C_RST}" five wk
