@@ -8,7 +8,7 @@
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.7"
+CLAUSTRO_VERSION="1.0.8"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
@@ -331,22 +331,42 @@ list_ids() {
     ls "$ACCOUNTS_DIR" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)\.account$/\1/p' | sort -n
 }
 
-read_account() { # id -> A_EMAIL A_LABEL A_CONFIG_DIR A_ADDED ; 1 if missing
+read_account() { # id -> A_EMAIL A_CONFIG_DIR A_ADDED ; 1 if missing
     local f="$ACCOUNTS_DIR/$1.account"
     [ -f "$f" ] || return 1
     EMAIL='' LABEL='' CONFIG_DIR='' ADDED=''
     . "$f"
-    A_EMAIL=$EMAIL A_LABEL=$LABEL A_CONFIG_DIR=$CONFIG_DIR A_ADDED=$ADDED
+    A_EMAIL=$EMAIL A_CONFIG_DIR=$CONFIG_DIR A_ADDED=$ADDED
 }
 
-write_account() { # id email label config_dir
+write_account() { # id email config_dir
     mkdir -p "$ACCOUNTS_DIR"
     {
         printf "EMAIL='%s'\n" "$(sq "$2")"
-        printf "LABEL='%s'\n" "$(sq "$3")"
-        printf "CONFIG_DIR='%s'\n" "$(sq "$4")"
+        printf "CONFIG_DIR='%s'\n" "$(sq "$3")"
         printf "ADDED='%s'\n" "$(date +%Y-%m-%d)"
     } > "$ACCOUNTS_DIR/$1.account"
+}
+
+plan_name() { # config_dir ('' = the ~/.claude login) -> PLAN
+    local cj="${1:-$HOME}/.claude.json" tier
+    PLAN='-'
+    [ -f "$cj" ] || return 0
+    tier=$(claustro_json get "$cj" oauthAccount.organizationRateLimitTier 2>/dev/null)
+    [ -n "$tier" ] || tier=$(claustro_json get "$cj" oauthAccount.organizationType 2>/dev/null)
+    [ -n "$tier" ] || return 0
+    tier=${tier#default_}
+    tier=${tier#claude_}
+    case "$tier" in
+        max_20x)     PLAN='Max 20x' ;;
+        max_5x)      PLAN='Max 5x' ;;
+        max)         PLAN='Max' ;;
+        pro)         PLAN='Pro' ;;
+        free)        PLAN='Free' ;;
+        team*)       PLAN='Team' ;;
+        enterprise*) PLAN='Enterprise' ;;
+        *)           PLAN=${tier//_/ } ;;
+    esac
 }
 
 next_id() {
@@ -438,12 +458,10 @@ resolve_account_from_env() {
 
 bootstrap_default_account() {
     [ -n "$(list_ids)" ] && return 0
-    local email sub
+    local email
     email=$(claustro_json get "$HOME/.claude.json" oauthAccount.emailAddress 2>/dev/null)
     [ -z "$email" ] && return 1
-    sub=$(claustro_json get "$HOME/.claude.json" oauthAccount.subscriptionType 2>/dev/null)
-    [ "$sub" = "null" ] && sub=''
-    write_account 1 "$email" "$sub" ''
+    write_account 1 "$email" ''
     note "registered your current login as room 1 ${C_DIM}($email)${C_RST}"
 }
 
@@ -630,7 +648,8 @@ cmd_status() {
 
         name=$A_EMAIL
         [ ${#name} -gt "$namew" ] && name="${name:0:namew-1}…"
-        plan=${A_LABEL:--}
+        plan_name "$A_CONFIG_DIR"
+        plan=$PLAN
         [ ${#plan} -gt 10 ] && plan="${plan:0:9}…"
 
         # bar glyphs are mixed-byte-width; pad fields by hand, not printf %-N
@@ -671,7 +690,7 @@ cmd_status() {
 
 cmd_add() {
     bootstrap_default_account >/dev/null 2>&1 || true
-    local id dir d f email sub label dup
+    local id dir d f email dup
     id=$(next_id)
     dir="$PROFILES_DIR/$id"
     mkdir -p "$dir" "$CLAUDE_HOME/projects" "$CLAUDE_HOME/todos"
@@ -696,7 +715,7 @@ cmd_add() {
 
     email=$(claustro_json get "$dir/.claude.json" oauthAccount.emailAddress 2>/dev/null)
     if [ -z "$email" ]; then
-        write_account "$id" '(not logged in)' '' "$dir"
+        write_account "$id" '(not logged in)' "$dir"
         err "no login detected. room $id is reserved; finish with: ${C_BOLD}cl relogin $id${C_RST}"
         return 1
     fi
@@ -708,15 +727,10 @@ cmd_add() {
         fi
     done
 
-    sub=$(claustro_json get "$dir/.claude.json" oauthAccount.subscriptionType 2>/dev/null)
-    [ "$sub" = "null" ] && sub=''
-    printf '  plan label for this room %s(e.g. "Max 20x", enter to skip)%s: ' "$C_DIM" "$C_RST"
-    read -r label </dev/tty
-    [ -z "$label" ] && label=$sub
-
-    write_account "$id" "$email" "$label" "$dir"
+    write_account "$id" "$email" "$dir"
+    plan_name "$dir"
     printf '\n'
-    note "room $id ready: ${C_BOLD}$email${C_RST}${label:+ ${C_DIM}($label)${C_RST}}  ·  launch with: ${C_BOLD}c $id${C_RST}"
+    note "room $id ready: ${C_BOLD}$email${C_RST} ${C_DIM}($PLAN)${C_RST}  ·  launch with: ${C_BOLD}c $id${C_RST}"
 }
 
 cmd_relogin() {
@@ -732,7 +746,7 @@ cmd_relogin() {
     local email
     email=$(claustro_json get "$A_CONFIG_DIR/.claude.json" oauthAccount.emailAddress 2>/dev/null)
     if [ -n "$email" ]; then
-        write_account "$id" "$email" "$A_LABEL" "$A_CONFIG_DIR"
+        write_account "$id" "$email" "$A_CONFIG_DIR"
         note "room $id → ${C_BOLD}$email${C_RST}"
     fi
 }
@@ -751,15 +765,6 @@ cmd_rm() {
     rm -rf "$A_CONFIG_DIR"
     rm -f "$ACCOUNTS_DIR/$id.account" "$USAGE_DIR/$id.snapshot"
     note "room $id demolished ${C_DIM}(the login itself may live on in your Keychain)${C_RST}"
-}
-
-cmd_label() {
-    local id=${1:-}
-    shift 2>/dev/null || true
-    [ -n "$id" ] && [ $# -gt 0 ] || die "usage: cl label <id> <text>"
-    read_account "$id" || die "no such room: $id"
-    write_account "$id" "$A_EMAIL" "$*" "$A_CONFIG_DIR"
-    note "room $id labeled ${C_BOLD}$*${C_RST}"
 }
 
 # ---------------------------------------------------------------- install ----
@@ -883,10 +888,9 @@ cmd_help() {
     cl <id>               same as c <id>
 
   ${C_BOLD}rooms${C_RST}
-    cl                    show all rooms + usage
+    cl                    show all rooms, plans + usage
     cl add                add an account ${C_DIM}(official claude /login flow)${C_RST}
     cl rm <id>            remove a room
-    cl label <id> <text>  set a plan label, e.g. "Max 20x"
     cl relogin <id>       re-authenticate a room
 
   ${C_BOLD}plumbing${C_RST}
@@ -909,7 +913,6 @@ case "${1:-status}" in
     launch)                shift; cmd_launch "$@" ;;
     add)                   cmd_add ;;
     rm|remove)             shift; cmd_rm "$@" ;;
-    label)                 shift; cmd_label "$@" ;;
     relogin)               shift; cmd_relogin "$@" ;;
     statusline)
         case "${2:-}" in

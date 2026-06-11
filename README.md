@@ -20,7 +20,7 @@ c 2               launch as account 2; same for cr 2, cw 3
 cr [id]           resume any session, from any account
 cw [id]           launch in a git worktree
 cl                rooms, plans, usage
-cl add            add a room · cl label 2 "Max 20x" · cl help
+cl add            add a room · cl rm 3 · cl help
 ```
 
 ## How it works
