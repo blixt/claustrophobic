@@ -2,3 +2,4 @@ site/public/claustrophobic
 site/public/install
 .wrangler-local/
 .DS_Store
+site/public/checksums.txt

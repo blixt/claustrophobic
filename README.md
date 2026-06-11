@@ -41,6 +41,8 @@ cl add            add a room · cl rm 3 · cl help
   `~/.claustrophobic/config`.
 - Whether multiple subscription accounts sit within Anthropic's consumer
   terms is between you and Anthropic. Read them first.
+- The installer pins the script's sha256 and refuses mismatches; current
+  checksums at <https://claustrophobic.xyz/checksums.txt>.
 - Uninstall: remove the claustrophobic block from your rc file, run
   `claustrophobic statusline uninstall`, delete `~/.claustrophobic/`.
 

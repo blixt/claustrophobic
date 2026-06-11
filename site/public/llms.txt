@@ -12,6 +12,9 @@ If a user asks you to install or set up Claustrophobic on their machine:
 
    curl -fsSL https://claustrophobic.xyz/install | bash
 
+   The installer verifies the downloaded script against a sha256 pinned
+   inside it and refuses mismatches; the current checksum is published at
+   https://claustrophobic.xyz/checksums.txt for independent verification.
    In a non-TTY context this downloads the script to
    ~/.claustrophobic/bin/claustrophobic and runs `claustrophobic install`,
    which: installs the c/cr/cw/cl shell bindings into ~/.zshrc (and ~/.bashrc

@@ -6,7 +6,19 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 cp claustrophobic site/public/claustrophobic
-cp install.sh site/public/install
+
+# pin the script's checksum inside the served installer, and publish it
+sha=$(shasum -a 256 claustrophobic | cut -d' ' -f1)
+sed "s/__CLAUSTRO_SHA256__/$sha/" install.sh > site/public/install
+grep -q "CLAUSTRO_SHA256=\"$sha\"" site/public/install || {
+    echo "checksum templating failed" >&2
+    exit 1
+}
+version=$(sed -n 's/^CLAUSTRO_VERSION="\(.*\)"/\1/p' claustrophobic)
+{
+    printf '# claustrophobic %s\n' "$version"
+    printf '%s  claustrophobic\n' "$sha"
+} > site/public/checksums.txt
 
 # Ambient CLOUDFLARE_*/CF_* vars would override wrangler.jsonc's account;
 # only the wrangler login should decide identity.
