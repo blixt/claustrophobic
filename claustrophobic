@@ -8,7 +8,7 @@
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.6"
+CLAUSTRO_VERSION="1.0.7"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
@@ -16,6 +16,7 @@ USAGE_DIR="$CLAUSTRO_ROOT/usage"
 PROFILES_DIR="$CLAUSTRO_ROOT/profiles"
 CONFIG_FILE="$CLAUSTRO_ROOT/config"
 CLAUDE_HOME="$HOME/.claude"
+NOW=$(date +%s)
 
 # ---------------------------------------------------------------- colors ----
 
@@ -231,6 +232,17 @@ JSEOF
 CLAUSTRO_RT=""
 json_rt() {
     [ -n "$CLAUSTRO_RT" ] && return 0
+    # detection forks a python3 health probe; cache it on disk so the
+    # statusline hot path stays fork-free
+    if [ -r "$CLAUSTRO_ROOT/.runtime" ]; then
+        read -r CLAUSTRO_RT < "$CLAUSTRO_ROOT/.runtime" || CLAUSTRO_RT=''
+        case "$CLAUSTRO_RT" in
+            py) command -v python3 >/dev/null 2>&1 || CLAUSTRO_RT='' ;;
+            js) command -v node >/dev/null 2>&1 || CLAUSTRO_RT='' ;;
+            *) CLAUSTRO_RT='' ;;
+        esac
+        [ -n "$CLAUSTRO_RT" ] && return 0
+    fi
     if command -v python3 >/dev/null 2>&1 && python3 -c '' >/dev/null 2>&1; then
         CLAUSTRO_RT=py
     elif command -v node >/dev/null 2>&1; then
@@ -238,6 +250,8 @@ json_rt() {
     else
         die "needs python3 (xcode-select --install) or node for JSON parsing"
     fi
+    mkdir -p "$CLAUSTRO_ROOT"
+    printf '%s\n' "$CLAUSTRO_RT" > "$CLAUSTRO_ROOT/.runtime"
 }
 
 claustro_json() {
@@ -251,14 +265,22 @@ claustro_json() {
 
 # ---------------------------------------------------------------- helpers ----
 
-now_s() { date +%s; }
-
 fmt_clock() { # epoch -> HH:MM (BSD date first, GNU fallback)
     date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '?'
 }
 
+expired() { # reset-epoch -> true if that usage window has passed
+    [ -n "$1" ] && [ "$NOW" -ge "$1" ]
+}
+
+sq() { # value -> value safe to embed in single quotes in a sourced file
+    # replacement via variable: bash 3.2 keeps quote chars in ${//} literal
+    local q="'\\''"
+    printf '%s' "${1//\'/$q}"
+}
+
 rel_time() {
-    local d=$(( $(now_s) - $1 ))
+    local d=$(( NOW - $1 ))
     if   [ "$d" -lt 60 ];     then printf 'now'
     elif [ "$d" -lt 3600 ];   then printf '%dm ago' $(( d / 60 ))
     elif [ "$d" -lt 86400 ];  then printf '%dh ago' $(( d / 3600 ))
@@ -266,35 +288,35 @@ rel_time() {
     fi
 }
 
-usage_bar() {
-    local pct=$1 filled i out=''
+# the three below set globals instead of printing: the statusline hot path
+# calls them per render, and $(...) would fork a subshell each time
+usage_bar() { # pct -> BAR
+    local pct=$1 filled i
+    BAR=''
     filled=$(( (pct + 10) / 20 ))
     [ "$filled" -gt 5 ] && filled=5
     [ "$filled" -lt 0 ] && filled=0
     i=0
     while [ "$i" -lt 5 ]; do
-        # ${out} braced: bash 3.2 corrupts a multibyte char right after $var
-        if [ "$i" -lt "$filled" ]; then out="${out}✦"; else out="${out}✧"; fi
+        # ${BAR} braced: bash 3.2 corrupts a multibyte char right after $var
+        if [ "$i" -lt "$filled" ]; then BAR="${BAR}✦"; else BAR="${BAR}✧"; fi
         i=$(( i + 1 ))
     done
-    printf '%s' "$out"
 }
 
-heat_color() {
-    local pct=$1
-    if   [ "$pct" -ge 85 ]; then printf '%s' "$C_RED"
-    elif [ "$pct" -ge 60 ]; then printf '%s' "$C_YEL"
-    else                         printf '%s' "$C_GRN"
+heat_color() { # pct -> HC
+    if   [ "$1" -ge 85 ]; then HC=$C_RED
+    elif [ "$1" -ge 60 ]; then HC=$C_YEL
+    else                       HC=$C_GRN
     fi
 }
 
-vibe() { # pct -> air phrase
-    local pct=$1
-    if   [ "$pct" -lt 0 ];  then printf 'fresh air'
-    elif [ "$pct" -lt 40 ]; then printf 'plenty of air'
-    elif [ "$pct" -lt 70 ]; then printf 'getting stuffy'
-    elif [ "$pct" -lt 90 ]; then printf 'thin air'
-    else                         printf 'barely breathing'
+vibe() { # pct -> VIBE
+    if   [ "$1" -lt 0 ];  then VIBE='fresh air'
+    elif [ "$1" -lt 40 ]; then VIBE='plenty of air'
+    elif [ "$1" -lt 70 ]; then VIBE='getting stuffy'
+    elif [ "$1" -lt 90 ]; then VIBE='thin air'
+    else                       VIBE='barely breathing'
     fi
 }
 
@@ -320,9 +342,9 @@ read_account() { # id -> A_EMAIL A_LABEL A_CONFIG_DIR A_ADDED ; 1 if missing
 write_account() { # id email label config_dir
     mkdir -p "$ACCOUNTS_DIR"
     {
-        printf "EMAIL='%s'\n" "$2"
-        printf "LABEL='%s'\n" "$3"
-        printf "CONFIG_DIR='%s'\n" "$4"
+        printf "EMAIL='%s'\n" "$(sq "$2")"
+        printf "LABEL='%s'\n" "$(sq "$3")"
+        printf "CONFIG_DIR='%s'\n" "$(sq "$4")"
         printf "ADDED='%s'\n" "$(date +%Y-%m-%d)"
     } > "$ACCOUNTS_DIR/$1.account"
 }
@@ -335,16 +357,18 @@ next_id() {
     printf '%d' $(( max + 1 ))
 }
 
-account_name() { # uses A_* -> label, else email
-    if [ -n "$A_LABEL" ]; then printf '%s' "$A_LABEL"; else printf '%s' "$A_EMAIL"; fi
-}
-
 read_snapshot() { # id -> S_FIVE_PCT S_FIVE_RESET S_SEVEN_PCT S_SEVEN_RESET S_TS ; 1 if none
     local f="$USAGE_DIR/$1.snapshot"
     S_FIVE_PCT='' S_FIVE_RESET='' S_SEVEN_PCT='' S_SEVEN_RESET='' S_TS=''
     [ -f "$f" ] || return 1
     FIVE_PCT='' FIVE_RESET='' SEVEN_PCT='' SEVEN_RESET='' TS=''
-    . "$f"
+    . "$f" >/dev/null 2>&1 || true
+    # everything here feeds integer comparisons; drop non-numeric values
+    case "$FIVE_PCT" in *[!0-9]*) FIVE_PCT='' ;; esac
+    case "$FIVE_RESET" in *[!0-9]*) FIVE_RESET='' ;; esac
+    case "$SEVEN_PCT" in *[!0-9]*) SEVEN_PCT='' ;; esac
+    case "$SEVEN_RESET" in *[!0-9]*) SEVEN_RESET='' ;; esac
+    case "$TS" in *[!0-9]*) TS='' ;; esac
     S_FIVE_PCT=$FIVE_PCT S_FIVE_RESET=$FIVE_RESET
     S_SEVEN_PCT=$SEVEN_PCT S_SEVEN_RESET=$SEVEN_RESET S_TS=$TS
 }
@@ -365,7 +389,7 @@ compute_eff() { # id -> sets EFF (effective 5h pct, -1 = never seen) + S_* vars
         EFF=-1
         return
     fi
-    if [ -n "$S_FIVE_RESET" ] && [ "$(now_s)" -ge "$S_FIVE_RESET" ]; then
+    if expired "$S_FIVE_RESET"; then
         EFF=0
     else
         EFF=$S_FIVE_PCT
@@ -447,8 +471,9 @@ cmd_launch() {
         if [ -t 2 ]; then
             local detail
             if [ "$eff" -lt 0 ]; then detail='unused'; else detail="5h ${eff}%"; fi
+            vibe "$eff"
             printf '%s✻ room %s%s · %s · %s · %s\n' \
-                "$C_OR" "$acct" "$C_RST" "$(account_name)" "$detail" "$(vibe "$eff")" >&2
+                "$C_OR" "$acct" "$C_RST" "$A_EMAIL" "$detail" "$VIBE" >&2
         fi
     else
         read_account "$acct" || die "no such room: $acct"
@@ -491,7 +516,7 @@ cmd_statusline_render() {
     local id name
     id=$(resolve_account_from_env) || id=''
     if [ -n "$id" ] && read_account "$id"; then
-        name=$(account_name)
+        name=$A_EMAIL
     else
         id='?' name='claude'
     fi
@@ -499,42 +524,47 @@ cmd_statusline_render() {
     # The payload only reflects this session's last API call, so it goes
     # stale in idle sessions; the per-room snapshot is shared by all of
     # them. Render and store whichever is fresher; ~ marks adopted data.
-    local cached=''
+    local cached='' tmp=''
     if [[ $id =~ ^[0-9]+$ ]]; then
         read_snapshot "$id" || true
         if [ -n "$SL_FIVE_PCT" ] && ! snapshot_is_fresher; then
             mkdir -p "$USAGE_DIR"
+            # write-then-rename: concurrent sessions render simultaneously,
+            # and a plain > truncates under a reader's feet
+            tmp="$USAGE_DIR/.$id.$$"
             {
                 printf "FIVE_PCT='%s'\n" "$SL_FIVE_PCT"
                 printf "FIVE_RESET='%s'\n" "$SL_FIVE_RESET"
                 printf "SEVEN_PCT='%s'\n" "$SL_SEVEN_PCT"
                 printf "SEVEN_RESET='%s'\n" "$SL_SEVEN_RESET"
-                printf "TS='%s'\n" "$(now_s)"
-            } > "$USAGE_DIR/$id.snapshot"
+                printf "TS='%s'\n" "$NOW"
+            } > "$tmp" && mv -f "$tmp" "$USAGE_DIR/$id.snapshot"
         elif [ -n "$S_FIVE_PCT" ]; then
             cached='~'
             SL_FIVE_PCT=$S_FIVE_PCT SL_FIVE_RESET=$S_FIVE_RESET
             SL_SEVEN_PCT=$S_SEVEN_PCT SL_SEVEN_RESET=$S_SEVEN_RESET
         fi
     fi
-    if [ -n "$SL_FIVE_PCT" ] && [ -n "$SL_FIVE_RESET" ] && [ "$(now_s)" -ge "$SL_FIVE_RESET" ]; then
+    if [ -n "$SL_FIVE_PCT" ] && expired "$SL_FIVE_RESET"; then
         cached='~' SL_FIVE_PCT=0 SL_FIVE_RESET=''
     fi
-    if [ -n "$SL_SEVEN_PCT" ] && [ -n "$SL_SEVEN_RESET" ] && [ "$(now_s)" -ge "$SL_SEVEN_RESET" ]; then
+    if [ -n "$SL_SEVEN_PCT" ] && expired "$SL_SEVEN_RESET"; then
         cached='~' SL_SEVEN_PCT=0 SL_SEVEN_RESET=''
     fi
 
     local sep="${C_DIM} │ ${C_RST}" five wk
     if [ -n "$SL_FIVE_PCT" ]; then
-        local hc reset_part=''
-        hc=$(heat_color "$SL_FIVE_PCT")
+        local reset_part=''
+        heat_color "$SL_FIVE_PCT"
+        usage_bar "$SL_FIVE_PCT"
         [ -n "$SL_FIVE_RESET" ] && reset_part="${C_DIM} → $(fmt_clock "$SL_FIVE_RESET")${C_RST}"
-        five="${C_DIM}5h${C_RST} ${hc}$(usage_bar "$SL_FIVE_PCT") ${cached}${SL_FIVE_PCT}%${C_RST}${reset_part}"
+        five="${C_DIM}5h${C_RST} ${HC}${BAR} ${cached}${SL_FIVE_PCT}%${C_RST}${reset_part}"
     else
         five="${C_DIM}5h -${C_RST}"
     fi
     if [ -n "$SL_SEVEN_PCT" ]; then
-        wk="${C_DIM}wk${C_RST} $(heat_color "$SL_SEVEN_PCT")${cached}${SL_SEVEN_PCT}%${C_RST}"
+        heat_color "$SL_SEVEN_PCT"
+        wk="${C_DIM}wk${C_RST} ${HC}${cached}${SL_SEVEN_PCT}%${C_RST}"
     else
         wk="${C_DIM}wk -${C_RST}"
     fi
@@ -565,6 +595,7 @@ cmd_statusline_uninstall() {
 # ------------------------------------------------------------------ status ----
 
 cmd_status() {
+    NOW=$(date +%s)
     local ids
     ids=$(list_ids)
     if [ -z "$ids" ]; then
@@ -572,15 +603,23 @@ cmd_status() {
         exit 0
     fi
 
+    # ACCOUNT column hugs the longest email
+    local namew=7 id
+    for id in $ids; do
+        read_account "$id"
+        [ ${#A_EMAIL} -gt "$namew" ] && namew=${#A_EMAIL}
+    done
+    [ "$namew" -gt 28 ] && namew=28
+
     printf '\n  %s✻ Claustrophobic%s %s· when the walls close in, switch rooms%s\n\n' \
         "$C_OR$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
-    printf '  %s%-4s %-28s %-10s %-12s %-5s %-7s %s%s\n' \
-        "$C_DIM" 'ID' 'ACCOUNT' 'PLAN' '5H' 'WK' 'RESETS' 'SEEN' "$C_RST"
+    printf '    %s%-3s %-*s %-10s %-12s %-5s %-7s %s%s\n' \
+        "$C_DIM" 'ID' "$namew" 'ACCOUNT' 'PLAN' '5H' 'WK' 'RESETS' 'SEEN' "$C_RST"
 
-    local pick id eff mark name plan fivec wkc resets seen hc
+    local pick eff mark name plan fivec wkc resets seen
     pick=$(autopick 2>/dev/null) || pick=''
 
-    for id in $(list_ids); do
+    for id in $ids; do
         read_account "$id"
         compute_eff "$id"
         eff=$EFF
@@ -590,34 +629,37 @@ cmd_status() {
         [ "$id" = "${CLAUSTROPHOBIC_ACCOUNT:-}" ] && mark="${C_OR}✻${C_RST}"
 
         name=$A_EMAIL
-        [ ${#name} -gt 28 ] && name="${name:0:27}…"
+        [ ${#name} -gt "$namew" ] && name="${name:0:namew-1}…"
         plan=${A_LABEL:--}
         [ ${#plan} -gt 10 ] && plan="${plan:0:9}…"
 
         # bar glyphs are mixed-byte-width; pad fields by hand, not printf %-N
         if [ "$eff" -lt 0 ]; then
-            fivec="${C_DIM}$(usage_bar 0) fresh ${C_RST}"
-            wkc="${C_DIM}$(printf '%-5s' '-')${C_RST}"
-            resets=$(printf '%-7s' '-')
+            usage_bar 0
+            fivec="${C_DIM}${BAR} fresh ${C_RST}"
+            wkc="${C_DIM}-    ${C_RST}"
+            resets='-      '
             seen="${C_DIM}never${C_RST}"
         else
-            hc=$(heat_color "$eff")
-            fivec="${hc}$(usage_bar "$eff") $(printf '%-6s' "${eff}%")${C_RST}"
-            if [ -n "$S_SEVEN_PCT" ] && { [ -z "$S_SEVEN_RESET" ] || [ "$(now_s)" -lt "$S_SEVEN_RESET" ]; }; then
-                wkc="$(heat_color "$S_SEVEN_PCT")$(printf '%-5s' "${S_SEVEN_PCT}%")${C_RST}"
+            heat_color "$eff"
+            usage_bar "$eff"
+            fivec="${HC}${BAR} $(printf '%-6s' "${eff}%")${C_RST}"
+            if [ -n "$S_SEVEN_PCT" ] && ! expired "$S_SEVEN_RESET"; then
+                heat_color "$S_SEVEN_PCT"
+                wkc="${HC}$(printf '%-5s' "${S_SEVEN_PCT}%")${C_RST}"
             else
-                wkc="${C_DIM}$(printf '%-5s' '-')${C_RST}"
+                wkc="${C_DIM}-    ${C_RST}"
             fi
-            if [ -n "$S_FIVE_RESET" ] && [ "$(now_s)" -lt "$S_FIVE_RESET" ]; then
+            if [ -n "$S_FIVE_RESET" ] && ! expired "$S_FIVE_RESET"; then
                 resets=$(printf '%-7s' "$(fmt_clock "$S_FIVE_RESET")")
             else
-                resets=$(printf '%-7s' '-')
+                resets='-      '
             fi
-            seen="${C_DIM}$(rel_time "${S_TS:-$(now_s)}")${C_RST}"
+            seen="${C_DIM}$(rel_time "${S_TS:-$NOW}")${C_RST}"
         fi
 
-        printf '  %s %s%-3s%s %-28s %s%-10s%s %s %s %s %s\n' \
-            "$mark" "$C_BOLD" "$id" "$C_RST" "$name" "$C_DIM" "$plan" "$C_RST" \
+        printf '  %s %s%-3s%s %-*s %s%-10s%s %s %s %s %s\n' \
+            "$mark" "$C_BOLD" "$id" "$C_RST" "$namew" "$name" "$C_DIM" "$plan" "$C_RST" \
             "$fivec" "$wkc" "$resets" "$seen"
     done
 
@@ -763,6 +805,10 @@ install_rc_block() { # rcfile
 }
 
 cmd_install() {
+    # check prerequisites before touching anything, especially rc files
+    command -v claude >/dev/null 2>&1 || die "install the claude CLI first: https://code.claude.com"
+    json_rt
+
     mkdir -p "$CLAUSTRO_ROOT/bin" "$ACCOUNTS_DIR" "$USAGE_DIR" "$PROFILES_DIR"
 
     local me
@@ -791,7 +837,6 @@ cmd_setup() {
     printf '\n  %s✻ Claustrophobic %s%s\n' "$C_OR$C_BOLD" "$CLAUSTRO_VERSION" "$C_RST"
     printf '  %sfeeling the walls close in? let'\''s get you some extra rooms.%s\n\n' "$C_DIM" "$C_RST"
 
-    command -v claude >/dev/null 2>&1 || die "install the claude CLI first: https://code.claude.com"
     cmd_install
 
     local ans
