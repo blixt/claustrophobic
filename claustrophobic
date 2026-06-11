@@ -20,7 +20,7 @@
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.2"
+CLAUSTRO_VERSION="1.0.3"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
@@ -286,7 +286,7 @@ usage_bar() { # pct -> 5-cell bar
     [ "$filled" -lt 0 ] && filled=0
     i=0
     while [ "$i" -lt 5 ]; do
-        if [ "$i" -lt "$filled" ]; then out="$out▓"; else out="$out░"; fi
+        if [ "$i" -lt "$filled" ]; then out="$out✦"; else out="$out✧"; fi
         i=$(( i + 1 ))
     done
     printf '%s' "$out"
@@ -597,7 +597,7 @@ cmd_status() {
         [ ${#plan} -gt 10 ] && plan="${plan:0:9}…"
 
         if [ "$eff" -lt 0 ]; then
-            fivec="${C_DIM}$(printf '%-12s' '░░░░░ fresh')${C_RST}"
+            fivec="${C_DIM}$(printf '%-12s' '✧✧✧✧✧ fresh')${C_RST}"
             wkc="${C_DIM}$(printf '%-5s' '-')${C_RST}"
             resets=$(printf '%-7s' '-')
             seen="${C_DIM}never${C_RST}"
