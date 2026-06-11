@@ -1,0 +1,873 @@
+#!/usr/bin/env bash
+#
+#   ✻ Claustrophobic
+#   multi-account harness for Claude Code — for when the walls close in.
+#
+#   One self-contained script. Share it: copy this file anywhere and run
+#       bash claustrophobic setup
+#
+#   What it does:
+#     - keeps each Claude login in its own room (CLAUDE_CONFIG_DIR profile)
+#     - shares sessions, settings, skills & plugins across rooms via symlinks,
+#       so `cr` resumes any session no matter which account started it
+#     - installs `c` / `cr` / `cw` / `cl` shell bindings
+#     - `c 2` launches as account 2; plain `c` picks the account with the
+#       most air left (lowest 5h usage)
+#     - a statusline that shows which room you're in and how stuffy it is,
+#       and doubles as the usage collector for `cl`
+#
+#   Requires: bash 3.2+, claude CLI, python3 (or node) for JSON.
+#
+set -o pipefail
+
+CLAUSTRO_VERSION="1.0.1"
+CLAUSTRO_ROOT="$HOME/.claustrophobic"
+CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
+ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
+USAGE_DIR="$CLAUSTRO_ROOT/usage"
+PROFILES_DIR="$CLAUSTRO_ROOT/profiles"
+CONFIG_FILE="$CLAUSTRO_ROOT/config"
+CLAUDE_HOME="$HOME/.claude"
+
+# ---------------------------------------------------------------- colors ----
+
+if [ -n "${NO_COLOR:-}" ]; then
+    CLAUSTRO_COLOR=0
+elif [ -t 1 ] || [ "${CLAUSTRO_FORCE_COLOR:-}" = "1" ]; then
+    CLAUSTRO_COLOR=1
+else
+    CLAUSTRO_COLOR=0
+fi
+
+set_colors() {
+    if [ "$CLAUSTRO_COLOR" = "1" ]; then
+        C_OR=$'\033[38;5;173m'   # Claude crail orange
+        C_BOLD=$'\033[1m'
+        C_DIM=$'\033[2m'
+        C_GRN=$'\033[38;5;108m'
+        C_YEL=$'\033[38;5;179m'
+        C_RED=$'\033[38;5;167m'
+        C_RST=$'\033[0m'
+    else
+        C_OR='' C_BOLD='' C_DIM='' C_GRN='' C_YEL='' C_RED='' C_RST=''
+    fi
+}
+set_colors
+
+err() { printf '%s✻ claustrophobic:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; }
+die() { err "$@"; exit 1; }
+note() { printf '%s✻%s %s\n' "$C_OR" "$C_RST" "$*"; }
+
+# ----------------------------------------------------------- json runtime ----
+# All JSON work goes through one helper program, available in python3 and
+# node flavors so the script runs on any common macOS dev setup.
+
+read -r -d '' PY_HELPER <<'PYEOF' || true
+import json, os, sys
+
+def g(d, path):
+    for k in path.split('.'):
+        if not isinstance(d, dict) or k not in d:
+            return None
+        d = d[k]
+    return d
+
+def q(v):
+    s = '' if v is None else str(v)
+    return "'" + s.replace("'", "'\\''") + "'"
+
+def epoch(v):
+    if v is None:
+        return None
+    s = str(v)
+    try:
+        return int(float(s))
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp())
+    except Exception:
+        return None
+
+op = sys.argv[1]
+
+if op == 'statusline-kv':
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        d = {}
+    rl = g(d, 'rate_limits') or {}
+    def pct(k):
+        v = g(rl, k + '.used_percentage')
+        try:
+            return int(round(float(v)))
+        except (TypeError, ValueError):
+            return None
+    print('SL_MODEL=' + q(g(d, 'model.display_name')))
+    print('SL_CWD=' + q(g(d, 'workspace.current_dir')))
+    print('SL_FIVE_PCT=' + q(pct('five_hour')))
+    print('SL_FIVE_RESET=' + q(epoch(g(rl, 'five_hour.resets_at'))))
+    print('SL_SEVEN_PCT=' + q(pct('seven_day')))
+    print('SL_SEVEN_RESET=' + q(epoch(g(rl, 'seven_day.resets_at'))))
+
+elif op == 'get':
+    try:
+        with open(os.path.expanduser(sys.argv[2])) as f:
+            d = json.load(f)
+        v = g(d, sys.argv[3])
+        if v is not None:
+            print(v if isinstance(v, str) else json.dumps(v))
+    except Exception:
+        pass
+
+elif op == 'merge-statusline':
+    p = os.path.expanduser(sys.argv[2])
+    d = {}
+    if os.path.exists(p):
+        with open(p) as f:
+            d = json.load(f)  # corrupt settings -> non-zero exit, bash aborts
+    prev = d.get('statusLine')
+    if isinstance(prev, dict) and 'claustrophobic' not in str(prev.get('command', '')):
+        with open(os.path.expanduser('~/.claustrophobic/prev-statusline.json'), 'w') as f:
+            json.dump(prev, f)
+    d['statusLine'] = {'type': 'command', 'command': sys.argv[3]}
+    with open(p, 'w') as f:
+        json.dump(d, f, indent=2)
+        f.write('\n')
+
+elif op == 'unmerge-statusline':
+    p = os.path.expanduser(sys.argv[2])
+    with open(p) as f:
+        d = json.load(f)
+    prevp = os.path.expanduser('~/.claustrophobic/prev-statusline.json')
+    if os.path.exists(prevp):
+        with open(prevp) as f:
+            d['statusLine'] = json.load(f)
+        os.remove(prevp)
+    else:
+        d.pop('statusLine', None)
+    with open(p, 'w') as f:
+        json.dump(d, f, indent=2)
+        f.write('\n')
+
+elif op == 'seed':
+    seed = {'hasCompletedOnboarding': True}
+    try:
+        with open(os.path.expanduser(sys.argv[2])) as f:
+            s = json.load(f)
+        for k in ('theme', 'autoUpdates', 'preferredNotifChannel',
+                  'bypassPermissionsModeAccepted'):
+            if k in s:
+                seed[k] = s[k]
+    except Exception:
+        pass
+    with open(os.path.expanduser(sys.argv[3]), 'w') as f:
+        json.dump(seed, f, indent=2)
+        f.write('\n')
+PYEOF
+
+read -r -d '' JS_HELPER <<'JSEOF' || true
+const fs = require('fs');
+const os = require('os');
+const ex = p => p.replace(/^~(?=$|\/)/, os.homedir());
+const g = (d, path) => {
+    for (const k of path.split('.')) {
+        if (d === null || typeof d !== 'object' || !(k in d)) return null;
+        d = d[k];
+    }
+    return d;
+};
+const q = v => "'" + String(v === null || v === undefined ? '' : v).replace(/'/g, "'\\''") + "'";
+const epoch = v => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    if (!Number.isNaN(n)) return Math.floor(n);
+    const t = Date.parse(String(v));
+    return Number.isNaN(t) ? null : Math.floor(t / 1000);
+};
+const readJson = p => JSON.parse(fs.readFileSync(ex(p), 'utf8'));
+const writeJson = (p, d) => fs.writeFileSync(ex(p), JSON.stringify(d, null, 2) + '\n');
+const [op, a, b] = process.argv.slice(1);
+
+if (op === 'statusline-kv') {
+    let d = {};
+    try { d = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (e) {}
+    const rl = g(d, 'rate_limits') || {};
+    const pct = k => {
+        const v = g(rl, k + '.used_percentage');
+        return v === null ? null : Math.round(Number(v));
+    };
+    console.log('SL_MODEL=' + q(g(d, 'model.display_name')));
+    console.log('SL_CWD=' + q(g(d, 'workspace.current_dir')));
+    console.log('SL_FIVE_PCT=' + q(pct('five_hour')));
+    console.log('SL_FIVE_RESET=' + q(epoch(g(rl, 'five_hour.resets_at'))));
+    console.log('SL_SEVEN_PCT=' + q(pct('seven_day')));
+    console.log('SL_SEVEN_RESET=' + q(epoch(g(rl, 'seven_day.resets_at'))));
+} else if (op === 'get') {
+    try {
+        const v = g(readJson(a), b);
+        if (v !== null) console.log(typeof v === 'string' ? v : JSON.stringify(v));
+    } catch (e) {}
+} else if (op === 'merge-statusline') {
+    let d = {};
+    if (fs.existsSync(ex(a))) d = readJson(a);
+    const prev = d.statusLine;
+    if (prev && typeof prev === 'object' && String(prev.command || '').indexOf('claustrophobic') < 0) {
+        writeJson('~/.claustrophobic/prev-statusline.json', prev);
+    }
+    d.statusLine = { type: 'command', command: b };
+    writeJson(a, d);
+} else if (op === 'unmerge-statusline') {
+    const d = readJson(a);
+    const prevp = ex('~/.claustrophobic/prev-statusline.json');
+    if (fs.existsSync(prevp)) {
+        d.statusLine = JSON.parse(fs.readFileSync(prevp, 'utf8'));
+        fs.unlinkSync(prevp);
+    } else {
+        delete d.statusLine;
+    }
+    writeJson(a, d);
+} else if (op === 'seed') {
+    const seed = { hasCompletedOnboarding: true };
+    try {
+        const s = readJson(a);
+        for (const k of ['theme', 'autoUpdates', 'preferredNotifChannel',
+                         'bypassPermissionsModeAccepted']) {
+            if (k in s) seed[k] = s[k];
+        }
+    } catch (e) {}
+    writeJson(b, seed);
+}
+JSEOF
+
+CLAUSTRO_RT=""
+json_rt() {
+    [ -n "$CLAUSTRO_RT" ] && return 0
+    if command -v python3 >/dev/null 2>&1 && python3 -c '' >/dev/null 2>&1; then
+        CLAUSTRO_RT=py
+    elif command -v node >/dev/null 2>&1; then
+        CLAUSTRO_RT=js
+    else
+        die "needs python3 (xcode-select --install) or node for JSON parsing"
+    fi
+}
+
+claustro_json() {
+    json_rt
+    if [ "$CLAUSTRO_RT" = "py" ]; then
+        python3 -c "$PY_HELPER" "$@"
+    else
+        node -e "$JS_HELPER" "$@"
+    fi
+}
+
+# ---------------------------------------------------------------- helpers ----
+
+now_s() { date +%s; }
+
+fmt_clock() { # epoch -> HH:MM (BSD date first, GNU fallback)
+    date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || printf '?'
+}
+
+rel_time() { # epoch -> "2m ago" etc
+    local d=$(( $(now_s) - $1 ))
+    if   [ "$d" -lt 60 ];     then printf 'now'
+    elif [ "$d" -lt 3600 ];   then printf '%dm ago' $(( d / 60 ))
+    elif [ "$d" -lt 86400 ];  then printf '%dh ago' $(( d / 3600 ))
+    else                           printf '%dd ago' $(( d / 86400 ))
+    fi
+}
+
+usage_bar() { # pct -> 5-cell bar
+    local pct=$1 filled i out=''
+    filled=$(( (pct + 10) / 20 ))
+    [ "$filled" -gt 5 ] && filled=5
+    [ "$filled" -lt 0 ] && filled=0
+    i=0
+    while [ "$i" -lt 5 ]; do
+        if [ "$i" -lt "$filled" ]; then out="$out▓"; else out="$out░"; fi
+        i=$(( i + 1 ))
+    done
+    printf '%s' "$out"
+}
+
+heat_color() { # pct -> color escape
+    local pct=$1
+    if   [ "$pct" -ge 85 ]; then printf '%s' "$C_RED"
+    elif [ "$pct" -ge 60 ]; then printf '%s' "$C_YEL"
+    else                         printf '%s' "$C_GRN"
+    fi
+}
+
+vibe() { # pct -> how's the air in this room?
+    local pct=$1
+    if   [ "$pct" -lt 0 ];  then printf 'fresh air'
+    elif [ "$pct" -lt 40 ]; then printf 'plenty of air'
+    elif [ "$pct" -lt 70 ]; then printf 'getting stuffy'
+    elif [ "$pct" -lt 90 ]; then printf 'thin air'
+    else                         printf 'barely breathing'
+    fi
+}
+
+load_config() {
+    CLAUDE_BASE_ARGS='--dangerously-skip-permissions'
+    [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+}
+
+# --------------------------------------------------------------- accounts ----
+
+list_ids() {
+    ls "$ACCOUNTS_DIR" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)\.account$/\1/p' | sort -n
+}
+
+read_account() { # id -> A_EMAIL A_LABEL A_CONFIG_DIR A_ADDED ; 1 if missing
+    local f="$ACCOUNTS_DIR/$1.account"
+    [ -f "$f" ] || return 1
+    EMAIL='' LABEL='' CONFIG_DIR='' ADDED=''
+    . "$f"
+    A_EMAIL=$EMAIL A_LABEL=$LABEL A_CONFIG_DIR=$CONFIG_DIR A_ADDED=$ADDED
+}
+
+write_account() { # id email label config_dir
+    mkdir -p "$ACCOUNTS_DIR"
+    {
+        printf "EMAIL='%s'\n" "$2"
+        printf "LABEL='%s'\n" "$3"
+        printf "CONFIG_DIR='%s'\n" "$4"
+        printf "ADDED='%s'\n" "$(date +%Y-%m-%d)"
+    } > "$ACCOUNTS_DIR/$1.account"
+}
+
+next_id() {
+    local max=0 id
+    for id in $(list_ids); do
+        [ "$id" -gt "$max" ] && max=$id
+    done
+    printf '%d' $(( max + 1 ))
+}
+
+account_name() { # uses A_* -> label, else email
+    if [ -n "$A_LABEL" ]; then printf '%s' "$A_LABEL"; else printf '%s' "$A_EMAIL"; fi
+}
+
+read_snapshot() { # id -> S_FIVE_PCT S_FIVE_RESET S_SEVEN_PCT S_SEVEN_RESET S_TS ; 1 if none
+    local f="$USAGE_DIR/$1.snapshot"
+    S_FIVE_PCT='' S_FIVE_RESET='' S_SEVEN_PCT='' S_SEVEN_RESET='' S_TS=''
+    [ -f "$f" ] || return 1
+    FIVE_PCT='' FIVE_RESET='' SEVEN_PCT='' SEVEN_RESET='' TS=''
+    . "$f"
+    S_FIVE_PCT=$FIVE_PCT S_FIVE_RESET=$FIVE_RESET
+    S_SEVEN_PCT=$SEVEN_PCT S_SEVEN_RESET=$SEVEN_RESET S_TS=$TS
+}
+
+compute_eff() { # id -> sets EFF (effective 5h pct, -1 = never seen) + S_* vars
+    if ! read_snapshot "$1" || [ -z "$S_FIVE_PCT" ]; then
+        EFF=-1
+        return
+    fi
+    if [ -n "$S_FIVE_RESET" ] && [ "$(now_s)" -ge "$S_FIVE_RESET" ]; then
+        EFF=0
+    else
+        EFF=$S_FIVE_PCT
+    fi
+}
+
+autopick() { # -> best account id on stdout; 1 if no accounts
+    local best='' best_eff=999 best_seven=999 id eff seven
+    for id in $(list_ids); do
+        compute_eff "$id"
+        eff=$EFF
+        # never-used beats everything, including 0%-after-reset
+        seven=${S_SEVEN_PCT:-0}
+        [ "$eff" -lt 0 ] && seven=-1
+        if [ "$eff" -lt "$best_eff" ] || { [ "$eff" -eq "$best_eff" ] && [ "$seven" -lt "$best_seven" ]; }; then
+            best=$id best_eff=$eff best_seven=$seven
+        fi
+    done
+    [ -n "$best" ] || return 1
+    printf '%s' "$best"
+}
+
+default_account_id() { # account whose CONFIG_DIR is empty (the ~/.claude login)
+    local id
+    for id in $(list_ids); do
+        read_account "$id"
+        if [ -z "$A_CONFIG_DIR" ]; then printf '%s' "$id"; return 0; fi
+    done
+    return 1
+}
+
+resolve_account_from_env() {
+    if [ -n "${CLAUSTROPHOBIC_ACCOUNT:-}" ]; then
+        printf '%s' "$CLAUSTROPHOBIC_ACCOUNT"
+        return 0
+    fi
+    if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+        local base
+        base=$(basename "$CLAUDE_CONFIG_DIR")
+        case "$CLAUDE_CONFIG_DIR" in
+            "$PROFILES_DIR"/*) printf '%s' "$base"; return 0 ;;
+        esac
+    fi
+    default_account_id
+}
+
+bootstrap_default_account() { # register existing ~/.claude login, if any
+    [ -n "$(list_ids)" ] && return 0
+    local email sub
+    email=$(claustro_json get "$HOME/.claude.json" oauthAccount.emailAddress 2>/dev/null)
+    [ -z "$email" ] && return 1
+    sub=$(claustro_json get "$HOME/.claude.json" oauthAccount.subscriptionType 2>/dev/null)
+    [ "$sub" = "null" ] && sub=''
+    write_account 1 "$email" "$sub" ''
+    note "registered your current login as room 1 ${C_DIM}($email)${C_RST}"
+}
+
+# ----------------------------------------------------------------- launch ----
+
+cmd_launch() {
+    local extra_args=() acct='' a
+    while [ $# -gt 0 ] && [ "$1" != '--' ]; do
+        extra_args[${#extra_args[@]}]=$1
+        shift
+    done
+    [ "${1:-}" = '--' ] && shift
+
+    if [ $# -gt 0 ] && [[ $1 =~ ^[0-9]+$ ]] && [ -f "$ACCOUNTS_DIR/$1.account" ]; then
+        acct=$1
+        shift
+    fi
+
+    if [ -z "$acct" ]; then
+        acct=$(autopick) || die "no accounts yet — run: ${C_BOLD}cl setup${C_RST}"
+        read_account "$acct"
+        local eff
+        compute_eff "$acct"
+        eff=$EFF
+        if [ -t 2 ]; then
+            local detail
+            if [ "$eff" -lt 0 ]; then detail='unused'; else detail="5h ${eff}%"; fi
+            printf '%s✻ room %s%s · %s · %s · %s\n' \
+                "$C_OR" "$acct" "$C_RST" "$(account_name)" "$detail" "$(vibe "$eff")" >&2
+        fi
+    else
+        read_account "$acct" || die "no such room: $acct"
+    fi
+
+    export CLAUSTROPHOBIC_ACCOUNT=$acct
+    if [ -n "$A_CONFIG_DIR" ]; then
+        export CLAUDE_CONFIG_DIR=$A_CONFIG_DIR
+    else
+        unset CLAUDE_CONFIG_DIR
+    fi
+
+    load_config
+    local args=()
+    for a in $CLAUDE_BASE_ARGS; do args[${#args[@]}]=$a; done
+    for a in "${extra_args[@]}"; do args[${#args[@]}]=$a; done
+
+    if [ -n "${CLAUSTROPHOBIC_DRY_RUN:-}" ]; then
+        printf 'CLAUSTROPHOBIC_ACCOUNT=%s\n' "$CLAUSTROPHOBIC_ACCOUNT"
+        printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR:-}"
+        printf 'exec claude'
+        for a in "${args[@]}" "$@"; do printf ' %s' "$a"; done
+        printf '\n'
+        exit 0
+    fi
+
+    command -v claude >/dev/null 2>&1 || die "claude CLI not found on PATH"
+    exec claude "${args[@]}" "$@"
+}
+
+# ------------------------------------------------------------- statusline ----
+
+cmd_statusline_render() {
+    CLAUSTRO_COLOR=1
+    set_colors
+    local input
+    input=$(cat)
+    eval "$(printf '%s' "$input" | claustro_json statusline-kv)"
+
+    local id name
+    id=$(resolve_account_from_env) || id=''
+    if [ -n "$id" ] && read_account "$id"; then
+        name=$(account_name)
+    else
+        id='?' name='claude'
+    fi
+
+    # statusline doubles as the usage collector for `cl`
+    if [[ $id =~ ^[0-9]+$ ]] && [ -n "$SL_FIVE_PCT" ]; then
+        mkdir -p "$USAGE_DIR"
+        {
+            printf "FIVE_PCT='%s'\n" "$SL_FIVE_PCT"
+            printf "FIVE_RESET='%s'\n" "$SL_FIVE_RESET"
+            printf "SEVEN_PCT='%s'\n" "$SL_SEVEN_PCT"
+            printf "SEVEN_RESET='%s'\n" "$SL_SEVEN_RESET"
+            printf "TS='%s'\n" "$(now_s)"
+        } > "$USAGE_DIR/$id.snapshot"
+    fi
+
+    local sep="${C_DIM} │ ${C_RST}" five wk
+    if [ -n "$SL_FIVE_PCT" ]; then
+        local hc reset_part=''
+        hc=$(heat_color "$SL_FIVE_PCT")
+        [ -n "$SL_FIVE_RESET" ] && reset_part="${C_DIM} → $(fmt_clock "$SL_FIVE_RESET")${C_RST}"
+        five="${C_DIM}5h${C_RST} ${hc}$(usage_bar "$SL_FIVE_PCT") ${SL_FIVE_PCT}%${C_RST}${reset_part}"
+    else
+        five="${C_DIM}5h —${C_RST}"
+    fi
+    if [ -n "$SL_SEVEN_PCT" ]; then
+        wk="${C_DIM}wk${C_RST} $(heat_color "$SL_SEVEN_PCT")${SL_SEVEN_PCT}%${C_RST}"
+    else
+        wk="${C_DIM}wk —${C_RST}"
+    fi
+
+    local tail=''
+    [ -n "$SL_MODEL" ] && tail="${sep}${C_DIM}${SL_MODEL}${C_RST}"
+    [ -n "$SL_CWD" ] && tail="${tail}${sep}${C_DIM}${SL_CWD##*/}${C_RST}"
+
+    printf '%s✻ %s%s %s%s%s%s%s%s%s\n' \
+        "$C_OR$C_BOLD" "$id" "$C_RST" "$C_OR" "$name" "$C_RST" \
+        "$sep$five" "$sep$wk" "$tail" ''
+}
+
+cmd_statusline_install() {
+    [ -f "$CLAUDE_HOME/settings.json" ] && cp "$CLAUDE_HOME/settings.json" "$CLAUDE_HOME/settings.json.claustrophobic-bak"
+    mkdir -p "$CLAUDE_HOME"
+    claustro_json merge-statusline "$CLAUDE_HOME/settings.json" '~/.claustrophobic/bin/claustrophobic statusline' \
+        || die "could not update $CLAUDE_HOME/settings.json (is it valid JSON?)"
+    note "statusline installed ${C_DIM}(backup: settings.json.claustrophobic-bak)${C_RST}"
+}
+
+cmd_statusline_uninstall() {
+    claustro_json unmerge-statusline "$CLAUDE_HOME/settings.json" \
+        || die "could not update $CLAUDE_HOME/settings.json"
+    note "statusline removed"
+}
+
+# ------------------------------------------------------------------ status ----
+
+cmd_status() {
+    local ids
+    ids=$(list_ids)
+    if [ -z "$ids" ]; then
+        note "no rooms yet — run ${C_BOLD}cl setup${C_RST} to get started"
+        exit 0
+    fi
+
+    printf '\n  %s✻ Claustrophobic%s %s— when the walls close in, switch rooms%s\n\n' \
+        "$C_OR$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
+    printf '  %s%-4s %-28s %-10s %-12s %-5s %-7s %s%s\n' \
+        "$C_DIM" 'ID' 'ACCOUNT' 'PLAN' '5H' 'WK' 'RESETS' 'SEEN' "$C_RST"
+
+    local pick id eff mark name plan fivec wkc resets seen hc
+    pick=$(autopick 2>/dev/null) || pick=''
+
+    for id in $(list_ids); do
+        read_account "$id"
+        compute_eff "$id"
+        eff=$EFF
+
+        mark=' '
+        [ "$id" = "$pick" ] && mark="${C_OR}→${C_RST}"
+        [ "$id" = "${CLAUSTROPHOBIC_ACCOUNT:-}" ] && mark="${C_OR}✻${C_RST}"
+
+        name=$A_EMAIL
+        [ ${#name} -gt 28 ] && name="${name:0:27}…"
+        plan=${A_LABEL:--}
+        [ ${#plan} -gt 10 ] && plan="${plan:0:9}…"
+
+        if [ "$eff" -lt 0 ]; then
+            fivec="${C_DIM}$(printf '%-12s' '░░░░░ fresh')${C_RST}"
+            wkc="${C_DIM}$(printf '%-5s' '-')${C_RST}"
+            resets=$(printf '%-7s' '-')
+            seen="${C_DIM}never${C_RST}"
+        else
+            hc=$(heat_color "$eff")
+            fivec="${hc}$(printf '%-12s' "$(usage_bar "$eff") ${eff}%")${C_RST}"
+            if [ -n "$S_SEVEN_PCT" ] && { [ -z "$S_SEVEN_RESET" ] || [ "$(now_s)" -lt "$S_SEVEN_RESET" ]; }; then
+                wkc="$(heat_color "$S_SEVEN_PCT")$(printf '%-5s' "${S_SEVEN_PCT}%")${C_RST}"
+            else
+                wkc="${C_DIM}$(printf '%-5s' '-')${C_RST}"
+            fi
+            if [ -n "$S_FIVE_RESET" ] && [ "$(now_s)" -lt "$S_FIVE_RESET" ]; then
+                resets=$(printf '%-7s' "$(fmt_clock "$S_FIVE_RESET")")
+            else
+                resets=$(printf '%-7s' '-')
+            fi
+            seen="${C_DIM}$(rel_time "${S_TS:-$(now_s)}")${C_RST}"
+        fi
+
+        printf '  %s %s%-3s%s %-28s %s%-10s%s %s %s %s %s\n' \
+            "$mark" "$C_BOLD" "$id" "$C_RST" "$name" "$C_DIM" "$plan" "$C_RST" \
+            "$fivec" "$wkc" "$resets" "$seen"
+    done
+
+    printf '\n  %sc [id]%s launch %s· id optional — picks the airiest room%s' "$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
+    printf '   %scl add%s new room   %scl help%s more\n\n' "$C_BOLD" "$C_RST" "$C_BOLD" "$C_RST"
+}
+
+# -------------------------------------------------------------------- add ----
+
+cmd_add() {
+    bootstrap_default_account >/dev/null 2>&1 || true
+    local id dir d f email sub label dup
+    id=$(next_id)
+    dir="$PROFILES_DIR/$id"
+    mkdir -p "$dir" "$CLAUDE_HOME/projects" "$CLAUDE_HOME/todos"
+
+    # share sessions, settings, skills & friends with the main ~/.claude
+    for d in projects todos shell-snapshots agents commands skills hooks plugins; do
+        [ -e "$CLAUDE_HOME/$d" ] && ln -sfn "$CLAUDE_HOME/$d" "$dir/$d"
+    done
+    for f in settings.json settings.local.json keybindings.json CLAUDE.md history.jsonl; do
+        [ -e "$CLAUDE_HOME/$f" ] && ln -sf "$CLAUDE_HOME/$f" "$dir/$f"
+    done
+    claustro_json seed "$HOME/.claude.json" "$dir/.claude.json"
+
+    printf '\n%s✻ opening a fresh room (%s)%s\n' "$C_OR$C_BOLD" "$id" "$C_RST"
+    printf '  Claude will launch with no login. Sign in with the account you want\n'
+    printf '  to add %s(type /login if you are not prompted)%s, then exit Claude\n' "$C_DIM" "$C_RST"
+    printf '  %s(/exit or Ctrl+C twice)%s to come back here.\n\n' "$C_DIM" "$C_RST"
+    printf '  press enter to launch... '
+    read -r _ </dev/tty
+
+    ( cd "$HOME" && CLAUDE_CONFIG_DIR="$dir" claude ) || true
+
+    email=$(claustro_json get "$dir/.claude.json" oauthAccount.emailAddress 2>/dev/null)
+    if [ -z "$email" ]; then
+        write_account "$id" '(not logged in)' '' "$dir"
+        err "no login detected — room $id is reserved; finish with: ${C_BOLD}cl relogin $id${C_RST}"
+        return 1
+    fi
+
+    for dup in $(list_ids); do
+        read_account "$dup"
+        if [ "$A_EMAIL" = "$email" ]; then
+            err "heads-up: $email is already room $dup — two rooms on one account share limits (and may fight over the Keychain)"
+        fi
+    done
+
+    sub=$(claustro_json get "$dir/.claude.json" oauthAccount.subscriptionType 2>/dev/null)
+    [ "$sub" = "null" ] && sub=''
+    printf '  plan label for this room %s(e.g. "Max 20x", enter to skip)%s: ' "$C_DIM" "$C_RST"
+    read -r label </dev/tty
+    [ -z "$label" ] && label=$sub
+
+    write_account "$id" "$email" "$label" "$dir"
+    printf '\n'
+    note "room $id ready — ${C_BOLD}$email${C_RST}${label:+ ${C_DIM}($label)${C_RST}}  ·  launch with: ${C_BOLD}c $id${C_RST}"
+}
+
+cmd_relogin() {
+    local id=${1:-}
+    [ -n "$id" ] || die "usage: cl relogin <id>"
+    read_account "$id" || die "no such room: $id"
+    if [ -z "$A_CONFIG_DIR" ]; then
+        note "room $id is your default ~/.claude login — just run ${C_BOLD}claude${C_RST} and ${C_BOLD}/login${C_RST}"
+        return 0
+    fi
+    note "log in, then exit Claude to come back"
+    ( cd "$HOME" && CLAUDE_CONFIG_DIR="$A_CONFIG_DIR" claude ) || true
+    local email
+    email=$(claustro_json get "$A_CONFIG_DIR/.claude.json" oauthAccount.emailAddress 2>/dev/null)
+    if [ -n "$email" ]; then
+        write_account "$id" "$email" "$A_LABEL" "$A_CONFIG_DIR"
+        note "room $id → ${C_BOLD}$email${C_RST}"
+    fi
+}
+
+cmd_rm() {
+    local id=${1:-}
+    [ -n "$id" ] || die "usage: cl rm <id>"
+    read_account "$id" || die "no such room: $id"
+    [ -z "$A_CONFIG_DIR" ] && die "room $id is your default ~/.claude login — claustrophobic won't demolish that one"
+    printf 'demolish room %s (%s)? [y/N] ' "$id" "$A_EMAIL"
+    read -r ans </dev/tty
+    case "$ans" in
+        y|Y|yes) ;;
+        *) note "kept"; return 0 ;;
+    esac
+    rm -rf "$A_CONFIG_DIR"
+    rm -f "$ACCOUNTS_DIR/$id.account" "$USAGE_DIR/$id.snapshot"
+    note "room $id demolished ${C_DIM}(the login itself may live on in your Keychain)${C_RST}"
+}
+
+cmd_label() {
+    local id=${1:-}
+    shift 2>/dev/null || true
+    [ -n "$id" ] && [ $# -gt 0 ] || die "usage: cl label <id> <text>"
+    read_account "$id" || die "no such room: $id"
+    write_account "$id" "$A_EMAIL" "$*" "$A_CONFIG_DIR"
+    note "room $id labeled ${C_BOLD}$*${C_RST}"
+}
+
+# ---------------------------------------------------------------- install ----
+
+cmd_shell_init() {
+    cat <<EOF
+case ":\$PATH:" in *":\$HOME/.claustrophobic/bin:"*) ;; *) export PATH="\$HOME/.claustrophobic/bin:\$PATH" ;; esac
+unalias c cr cw cl 2>/dev/null
+# 'function' keyword form: zsh would reject 'c() {...}' while an alias c exists
+function c  { "\$HOME/.claustrophobic/bin/claustrophobic" launch -- "\$@"; }
+function cr { "\$HOME/.claustrophobic/bin/claustrophobic" launch --resume -- "\$@"; }
+function cw { "\$HOME/.claustrophobic/bin/claustrophobic" launch --worktree -- "\$@"; }
+function cl { "\$HOME/.claustrophobic/bin/claustrophobic" "\$@"; }
+EOF
+}
+
+self_path() {
+    local src=$0 dir
+    dir=$(cd "$(dirname "$src")" >/dev/null 2>&1 && pwd) || return 1
+    printf '%s/%s' "$dir" "$(basename "$src")"
+}
+
+install_rc_block() { # rcfile
+    local rc=$1
+    if grep -E -q '^alias (c|cr|cw|cl)=' "$rc" 2>/dev/null; then
+        # write through a temp file + cat so rc files that are symlinks
+        # (dotfile repos) keep pointing at their target
+        local tmp
+        tmp=$(mktemp) || die "mktemp failed"
+        cp "$rc" "$rc.claustrophobic-bak" \
+            && sed -E 's/^alias (c|cr|cw|cl)=/# claustrophobic took over this binding: alias \1=/' "$rc" > "$tmp" \
+            && cat "$tmp" > "$rc" \
+            && note "commented out old c/cr/cw aliases in $rc ${C_DIM}(backup: $rc.claustrophobic-bak)${C_RST}"
+        rm -f "$tmp"
+    fi
+    grep -q 'claustrophobic.*shell-init' "$rc" 2>/dev/null && return 0
+    {
+        printf '\n# >>> claustrophobic — when the walls close in, switch rooms >>>\n'
+        printf 'eval "$("$HOME/.claustrophobic/bin/claustrophobic" shell-init)"\n'
+        printf '# <<< claustrophobic <<<\n'
+    } >> "$rc"
+    note "shell bindings installed in $rc"
+}
+
+cmd_install() {
+    mkdir -p "$CLAUSTRO_ROOT/bin" "$ACCOUNTS_DIR" "$USAGE_DIR" "$PROFILES_DIR"
+
+    local me
+    me=$(self_path)
+    if [ -n "$me" ] && [ "$me" != "$CLAUSTRO_BIN" ] && ! cmp -s "$me" "$CLAUSTRO_BIN" 2>/dev/null; then
+        cp "$me" "$CLAUSTRO_BIN"
+    fi
+    chmod +x "$CLAUSTRO_BIN" 2>/dev/null
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        {
+            printf '# claustrophobic config\n'
+            printf '# flags prepended to every claude launch (word-split)\n'
+            printf "CLAUDE_BASE_ARGS='--dangerously-skip-permissions'\n"
+        } > "$CONFIG_FILE"
+    fi
+
+    [ -f "$HOME/.zshrc" ] || touch "$HOME/.zshrc"
+    install_rc_block "$HOME/.zshrc"
+    [ -f "$HOME/.bashrc" ] && install_rc_block "$HOME/.bashrc"
+
+    bootstrap_default_account || true
+}
+
+cmd_setup() {
+    printf '\n  %s✻ Claustrophobic %s%s\n' "$C_OR$C_BOLD" "$CLAUSTRO_VERSION" "$C_RST"
+    printf '  %sfeeling the walls close in? let'\''s get you some extra rooms.%s\n\n' "$C_DIM" "$C_RST"
+
+    command -v claude >/dev/null 2>&1 || die "install the claude CLI first: https://code.claude.com"
+    cmd_install
+
+    local ans
+    printf '\n  run claude with --dangerously-skip-permissions by default? [Y/n] '
+    read -r ans </dev/tty
+    case "$ans" in
+        n|N|no)
+            sed -i.bak "s/^CLAUDE_BASE_ARGS=.*/CLAUDE_BASE_ARGS=''/" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
+            ;;
+    esac
+
+    printf '  install the statusline (shows room + air supply inside Claude)? [Y/n] '
+    read -r ans </dev/tty
+    case "$ans" in
+        n|N|no) ;;
+        *) cmd_statusline_install ;;
+    esac
+
+    while :; do
+        printf '\n  add another account now? [y/N] '
+        read -r ans </dev/tty
+        case "$ans" in
+            y|Y|yes) cmd_add || true ;;
+            *) break ;;
+        esac
+    done
+
+    cmd_status
+    note "restart your shell (or: source ~/.zshrc) and you're in."
+}
+
+# -------------------------------------------------------------------- help ----
+
+cmd_help() {
+    cat <<EOF
+
+  ${C_OR}${C_BOLD}✻ Claustrophobic${C_RST} ${CLAUSTRO_VERSION} ${C_DIM}— multi-account harness for Claude Code${C_RST}
+  ${C_DIM}because the context window isn't the only thing closing in${C_RST}
+
+  ${C_BOLD}launching${C_RST}
+    c  [id] [args...]     claude  ${C_DIM}(id optional — auto-picks the airiest room)${C_RST}
+    cr [id] [args...]     claude --resume
+    cw [id] [args...]     claude --worktree
+    cl <id>               same as c <id>
+
+  ${C_BOLD}rooms${C_RST}
+    cl                    show all rooms + usage
+    cl add                add an account ${C_DIM}(official claude /login flow)${C_RST}
+    cl rm <id>            remove a room
+    cl label <id> <text>  set a plan label, e.g. "Max 20x"
+    cl relogin <id>       re-authenticate a room
+
+  ${C_BOLD}plumbing${C_RST}
+    cl setup              interactive first-time setup ${C_DIM}(safe to re-run)${C_RST}
+    cl install            non-interactive: bindings + dirs + register login
+    cl statusline install|uninstall
+    cl help · cl version
+
+  ${C_DIM}switching mid-task: exit claude, then \`cr\` — sessions are shared across
+  rooms, so any account can resume any session. usage data refreshes whenever
+  a room's statusline is on screen; idle rooms show their last known air.${C_RST}
+
+EOF
+}
+
+# ---------------------------------------------------------------- dispatch ----
+
+case "${1:-status}" in
+    status|ls|list)        cmd_status ;;
+    launch)                shift; cmd_launch "$@" ;;
+    add)                   cmd_add ;;
+    rm|remove)             shift; cmd_rm "$@" ;;
+    label)                 shift; cmd_label "$@" ;;
+    relogin)               shift; cmd_relogin "$@" ;;
+    statusline)
+        case "${2:-}" in
+            install)       cmd_statusline_install ;;
+            uninstall)     cmd_statusline_uninstall ;;
+            *)             cmd_statusline_render ;;
+        esac ;;
+    shell-init)            cmd_shell_init ;;
+    install)               cmd_install; note "installed — run ${C_BOLD}cl setup${C_RST} to add accounts" ;;
+    setup)                 cmd_setup ;;
+    help|-h|--help)        cmd_help ;;
+    version|--version)     printf 'claustrophobic %s\n' "$CLAUSTRO_VERSION" ;;
+    *)
+        if [[ $1 =~ ^[0-9]+$ ]]; then
+            shift_id=$1; shift
+            cmd_launch -- "$shift_id" "$@"
+        else
+            err "unknown command: $1"
+            cmd_help
+            exit 1
+        fi ;;
+esac

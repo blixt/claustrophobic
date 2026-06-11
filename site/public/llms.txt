@@ -1,0 +1,50 @@
+# Claustrophobic — setup instructions for AI agents
+
+Claustrophobic is a multi-account harness for Claude Code: it isolates several
+Claude subscription logins in separate CLAUDE_CONFIG_DIR profiles ("rooms"),
+shares sessions/settings/skills between them via symlinks, and installs
+c / cr / cw / cl shell bindings that pick the least-used account
+automatically.
+
+If a user asks you to install or set up Claustrophobic on their machine:
+
+1. Run the installer non-interactively:
+
+   curl -fsSL https://claustrophobic.xyz/install | bash
+
+   In a non-TTY context this downloads the script to
+   ~/.claustrophobic/bin/claustrophobic and runs `claustrophobic install`,
+   which: installs the c/cr/cw/cl shell bindings into ~/.zshrc (and ~/.bashrc
+   if present), comments out any pre-existing aliases with those names
+   (backup kept next to the rc file), and registers the user's current
+   ~/.claude login as room 1.
+
+2. Optionally install the statusline (shows active account + rate-limit usage
+   inside Claude Code, and collects the usage data the auto-picker needs):
+
+   ~/.claustrophobic/bin/claustrophobic statusline install
+
+3. Adding more accounts CANNOT be automated — it requires the official Claude
+   login flow in a browser. Tell the user to run, in their own terminal,
+   once per extra account:
+
+   cl add
+
+   Each account must be a distinct email; the Claude CLI handles login.
+
+4. Verify with: ~/.claustrophobic/bin/claustrophobic status
+   (after a new shell, plain `cl` works.)
+
+Usage summary for the user:
+- `c` launches Claude Code on the account with the lowest 5-hour usage
+- `c 2` forces account 2; same for `cr` (resume) and `cw` (worktree)
+- `cl` lists accounts and usage; `cl help` shows everything
+- Mid-task account switch: exit Claude, run `cr` — sessions are shared
+  across accounts, so the session resumes on the freshest account.
+
+Requirements: macOS or Linux, bash 3.2+, the claude CLI, python3 or node.
+Default launch flags include --dangerously-skip-permissions; change
+CLAUDE_BASE_ARGS in ~/.claustrophobic/config if undesired.
+
+Note for users: running multiple subscription accounts may be restricted by
+Anthropic's consumer terms — they should verify that themselves.

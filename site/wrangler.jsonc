@@ -1,0 +1,18 @@
+{
+    "$schema": "https://unpkg.com/wrangler/config-schema.json",
+    "name": "claustrophobic-site",
+    "compatibility_date": "2026-06-11",
+    "account_id": "4efec64383e05699946cdb043c83fa42",
+    "assets": {
+        "directory": "./public"
+    },
+    "routes": [
+        {
+            "pattern": "claustrophobic.xyz/*",
+            "zone_name": "claustrophobic.xyz"
+        }
+    ],
+    "observability": {
+        "enabled": true
+    }
+}

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claustrophobic — multi-account harness for Claude Code</title>
+<meta name="description" content="Run several Claude subscriptions side by side. One keystroke to launch on the account with the most air left; sessions follow you across accounts.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext x='16' y='24' font-size='24' text-anchor='middle' fill='%23d97757'%3E%E2%9C%BB%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Newsreader:ital,opsz,wght@1,6..72,300;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg: #161210;
+    --bg-raised: #1d1815;
+    --ink: #e8ddd0;
+    --dim: #8d8074;
+    --faint: #4b4138;
+    --crail: #d97757;
+    --crail-bright: #e8916f;
+    --green: #97b585;
+    --yellow: #d4b16a;
+    --red: #cf6f63;
+    --frame: 14px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Fragment Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(ellipse 120% 80% at 50% -10%, #221a14 0%, var(--bg) 60%);
+}
+
+/* the room — a frame that slowly breathes in */
+.walls {
+    position: fixed;
+    inset: var(--frame);
+    border: 1px solid var(--faint);
+    pointer-events: none;
+    z-index: 10;
+    animation: breathe 11s ease-in-out infinite;
+}
+.walls::after {
+    content: "";
+    position: absolute;
+    inset: 4px;
+    border: 1px solid rgba(75, 65, 56, 0.25);
+}
+@keyframes breathe {
+    0%, 100% { inset: var(--frame); }
+    50% { inset: calc(var(--frame) + 7px); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .walls { animation: none; }
+}
+
+main {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 9rem 2rem 7rem;
+}
+
+.spark { color: var(--crail); }
+
+h1 {
+    font-size: 2.1rem;
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+}
+h1 .spark { margin-right: 0.35rem; }
+
+.tagline {
+    font-family: "Newsreader", Georgia, serif;
+    font-style: italic;
+    font-weight: 300;
+    font-size: 1.55rem;
+    color: var(--dim);
+    margin: 0.4rem 0 2.4rem;
+    letter-spacing: 0.01em;
+}
+.tagline em { color: var(--crail); font-style: italic; }
+
+p { color: var(--dim); margin-bottom: 1.2rem; }
+p strong { color: var(--ink); font-weight: 400; }
+a { color: var(--crail); text-decoration: none; border-bottom: 1px solid rgba(217, 119, 87, 0.35); }
+a:hover { color: var(--crail-bright); border-bottom-color: var(--crail-bright); }
+
+h2 {
+    font-size: 0.85rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--crail);
+    margin: 4.2rem 0 1.3rem;
+}
+h2::before { content: "## "; color: var(--faint); }
+
+/* code + terminal blocks */
+.block {
+    position: relative;
+    background: var(--bg-raised);
+    border: 1px solid #2c241e;
+    border-radius: 6px;
+    padding: 1.05rem 1.2rem;
+    margin: 1.4rem 0;
+    overflow-x: auto;
+}
+.block pre {
+    font-family: inherit;
+    font-size: 0.86rem;
+    line-height: 1.7;
+    white-space: pre;
+}
+.block .prompt { color: var(--faint); user-select: none; }
+.block .cmd { color: var(--ink); }
+
+button.copy {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.6rem;
+    font-family: inherit;
+    font-size: 0.72rem;
+    color: var(--dim);
+    background: transparent;
+    border: 1px solid var(--faint);
+    border-radius: 4px;
+    padding: 0.15rem 0.55rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+button.copy:hover { color: var(--crail); border-color: var(--crail); }
+button.copy.done { color: var(--green); border-color: var(--green); }
+
+/* fake terminal */
+.term { padding-top: 2.2rem; }
+.term::before {
+    content: "● ● ●";
+    position: absolute;
+    top: 0.7rem;
+    left: 1.1rem;
+    font-size: 0.55rem;
+    letter-spacing: 0.45em;
+    color: var(--faint);
+}
+.t-or { color: var(--crail); }
+.t-dim { color: var(--faint); }
+.t-mid { color: var(--dim); }
+.t-grn { color: var(--green); }
+.t-yel { color: var(--yellow); }
+.t-red { color: var(--red); }
+.t-b { color: var(--ink); }
+
+.statusline {
+    border-top: 1px dashed #2c241e;
+    margin-top: 0.9rem;
+    padding-top: 0.75rem;
+    font-size: 0.86rem;
+    white-space: pre;
+}
+
+/* lists & tables */
+ol.how { counter-reset: n; list-style: none; }
+ol.how li {
+    counter-increment: n;
+    margin-bottom: 1.15rem;
+    padding-left: 2.4rem;
+    position: relative;
+    color: var(--dim);
+}
+ol.how li::before {
+    content: counter(n, decimal-leading-zero);
+    position: absolute;
+    left: 0;
+    top: 0.05rem;
+    color: var(--crail);
+    font-size: 0.8rem;
+}
+ol.how strong { color: var(--ink); font-weight: 400; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.86rem; margin: 1.4rem 0; }
+td { padding: 0.42rem 0.6rem 0.42rem 0; vertical-align: top; color: var(--dim); border-top: 1px solid #241e19; }
+td:first-child { color: var(--ink); white-space: nowrap; padding-right: 1.6rem; }
+tr:first-child td { border-top: none; }
+
+.fine {
+    font-size: 0.8rem;
+    color: var(--dim);
+    border-left: 2px solid #2c241e;
+    padding-left: 1.1rem;
+    margin: 1rem 0;
+}
+
+footer {
+    margin-top: 6rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid #241e19;
+    font-size: 0.78rem;
+    color: var(--faint);
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+/* entrance */
+@media (prefers-reduced-motion: no-preference) {
+    .rise { opacity: 0; transform: translateY(10px); animation: rise 0.7s ease-out forwards; }
+    .rise:nth-child(2) { animation-delay: 0.08s; }
+    @keyframes rise { to { opacity: 1; transform: none; } }
+    main > * { opacity: 0; animation: rise 0.7s ease-out forwards; }
+    main > *:nth-child(1) { animation-delay: 0s; }
+    main > *:nth-child(2) { animation-delay: 0.06s; }
+    main > *:nth-child(3) { animation-delay: 0.12s; }
+    main > *:nth-child(4) { animation-delay: 0.18s; }
+    main > *:nth-child(n+5) { animation-delay: 0.24s; }
+}
+
+@media (max-width: 560px) {
+    main { padding: 5.5rem 1.3rem 4rem; }
+    h1 { font-size: 1.6rem; }
+    .tagline { font-size: 1.25rem; }
+    :root { --frame: 8px; }
+}
+</style>
+</head>
+<body>
+<div class="walls" aria-hidden="true"></div>
+<main>
+
+<h1><span class="spark">✻</span>Claustrophobic</h1>
+<p class="tagline">for when <em>the walls close in</em>, switch rooms.</p>
+
+<p>A multi-account harness for <strong>Claude Code</strong>. Run several Claude
+subscriptions side by side: one keystroke launches on the account with the
+most air left, and your sessions, settings, skills and plugins follow you
+across accounts — switching mid-task is just <strong>exit, <code>cr</code>,
+keep going</strong>.</p>
+
+<h2 id="install">Install</h2>
+
+<div class="block">
+<button class="copy" data-copy="curl -fsSL https://claustrophobic.xyz/install | bash">copy</button>
+<pre><span class="prompt">$ </span><span class="cmd">curl -fsSL https://claustrophobic.xyz/install | bash</span></pre>
+</div>
+
+<p>Setup registers your current <code>~/.claude</code> login as room 1,
+installs the <code>c</code> / <code>cr</code> / <code>cw</code> /
+<code>cl</code> bindings (existing aliases are commented out, with a backup),
+offers the statusline, and walks you through adding more accounts via the
+official <code>claude</code> login. Safe to re-run. Prefer to read first?
+The whole thing is <a href="/claustrophobic">one bash script</a>.</p>
+
+<p>Or hand it to Claude:</p>
+
+<div class="block">
+<button class="copy" data-copy="Set up Claustrophobic on this machine: read https://claustrophobic.xyz/llms.txt and follow it.">copy</button>
+<pre><span class="cmd">Set up Claustrophobic on this machine: read
+https://claustrophobic.xyz/llms.txt and follow it.</span></pre>
+</div>
+
+<h2 id="rooms">Rooms</h2>
+
+<div class="block term">
+<pre><span class="prompt">$ </span><span class="cmd">cl</span>
+
+  <span class="t-or">✻ Claustrophobic</span> <span class="t-dim">— when the walls close in, switch rooms</span>
+
+  <span class="t-dim">ID  ACCOUNT             PLAN     5H          WK   SEEN</span>
+   <span class="t-b">1</span>  you@example.com     <span class="t-mid">Max 20x</span>  <span class="t-red">▓▓▓▓░ 82%</span>   <span class="t-yel">61%</span>  <span class="t-mid">2m ago</span>
+ <span class="t-or">→</span> <span class="t-b">2</span>  ai-002@example.com  <span class="t-mid">Max 20x</span>  <span class="t-grn">▓░░░░ 12%</span>   <span class="t-grn">8%</span>   <span class="t-mid">3h ago</span>
+   <span class="t-b">3</span>  ai-003@example.com  <span class="t-mid">-</span>        <span class="t-dim">░░░░░ fresh</span> <span class="t-dim">-</span>    <span class="t-dim">never</span></pre>
+<div class="statusline"><span class="t-dim">inside Claude, the statusline keeps watch:</span>
+<span class="t-or">✻ 2</span> <span class="t-or">ai-002</span> <span class="t-dim">│</span> <span class="t-mid">5h</span> <span class="t-grn">▓░░░░ 12%</span> <span class="t-dim">→ 17:00</span> <span class="t-dim">│</span> <span class="t-mid">wk</span> <span class="t-grn">8%</span> <span class="t-dim">│ Opus 4.8 │ my-app</span></div>
+</div>
+
+<table>
+<tr><td>c</td><td>launch Claude on the airiest room — lowest 5-hour usage wins</td></tr>
+<tr><td>c 2</td><td>launch as account 2 (any room number works: <code>cr 2</code>, <code>cw 3</code>, …)</td></tr>
+<tr><td>cr</td><td>resume — sessions are shared, any account can pick up any session</td></tr>
+<tr><td>cw</td><td>launch in a git worktree</td></tr>
+<tr><td>cl</td><td>the table above · <code>cl add</code> · <code>cl label 2 "Max 20x"</code> · <code>cl help</code></td></tr>
+</table>
+
+<h2 id="how">How it works</h2>
+
+<ol class="how">
+<li><strong>Every account gets its own room.</strong> Extra logins live in
+isolated <code>CLAUDE_CONFIG_DIR</code> profiles under
+<code>~/.claustrophobic/profiles/</code> — credentials never touch each
+other, and the official Claude CLI does the logging in.</li>
+<li><strong>The rooms share furniture.</strong> Sessions, memory,
+<code>settings.json</code>, skills, agents and plugins are symlinked back to
+your main <code>~/.claude</code>, so every room feels identical and
+<code>cr</code> resumes any session from any account.</li>
+<li><strong>The statusline is the sensor.</strong> Each render snapshots that
+account's rate-limit usage; <code>cl</code> and the auto-picker read the
+snapshots. Idle rooms show their last known air, rooms past their reset
+count as fresh.</li>
+</ol>
+
+<h2 id="fine-print">Fine print</h2>
+
+<p class="fine">Needs macOS or Linux, bash 3.2+, the
+<a href="https://code.claude.com">claude CLI</a>, and python3 or node.
+Accounts must be distinct emails. Launch flags default to
+<code>--dangerously-skip-permissions</code> — set during setup, change any
+time in <code>~/.claustrophobic/config</code>.</p>
+
+<p class="fine">Whether running multiple subscription accounts is within
+Anthropic's consumer terms is between you and Anthropic — read them before
+buying three Max plans.</p>
+
+<p class="fine">Uninstall: remove the claustrophobic block from your rc file,
+restore the commented aliases, run
+<code>claustrophobic statusline uninstall</code>, delete
+<code>~/.claustrophobic/</code>.</p>
+
+<footer>
+<span><span class="spark">✻</span> claustrophobic.xyz</span>
+<span>built with Claude, for Claude</span>
+</footer>
+
+</main>
+<script>
+for (const btn of document.querySelectorAll("button.copy")) {
+    btn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        btn.textContent = "copied";
+        btn.classList.add("done");
+        setTimeout(() => { btn.textContent = "copy"; btn.classList.remove("done"); }, 1600);
+    });
+}
+</script>
+</body>
+</html>
