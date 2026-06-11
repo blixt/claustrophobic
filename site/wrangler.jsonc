@@ -3,11 +3,8 @@
     "name": "claustrophobic-site",
     "compatibility_date": "2026-06-11",
     "account_id": "4efec64383e05699946cdb043c83fa42",
-    "main": "worker.js",
     "assets": {
-        "directory": "./public",
-        "binding": "ASSETS",
-        "run_worker_first": true
+        "directory": "./public"
     },
     "routes": [
         {
