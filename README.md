@@ -2,7 +2,8 @@
 
 Multi-account harness for Claude Code. When the walls close in, switch rooms.
 
-[claustrophobic.xyz](https://claustrophobic.xyz)
+[claustrophobic.xyz](https://claustrophobic.xyz) ·
+[github.com/blixt/claustrophobic](https://github.com/blixt/claustrophobic)
 
 ```sh
 curl -fsSL https://claustrophobic.xyz/install | bash
