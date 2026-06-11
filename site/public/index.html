@@ -201,21 +201,16 @@ button.copy.done { color: var(--green); border-color: var(--green); }
 .t-yel { color: var(--yellow); }
 .t-red { color: var(--red); }
 .t-b { color: var(--ink); }
+/* quadrant blocks are missing from Fragment Mono; system monos draw them
+   with correct metrics */
+.t-salmon { color: #d78a82; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.t-pink { color: #ef8fad; }
 
-.statusline {
-    border-top: 1px dashed #2c241e;
-    margin-top: 0.9rem;
-    padding-top: 0.75rem;
-    font-size: 0.86rem;
+.tlines .ln {
     white-space: pre;
-}
-
-.tlines .ln, .statusline .ln {
-    white-space: pre;
-    font-size: 0.86rem;
+    font-size: 0.8rem;
     line-height: 1.7;
 }
-.statusline .ln { font-size: inherit; }
 .cur {
     display: inline-block;
     width: 0.55em;
@@ -286,9 +281,12 @@ footer {
 }
 
 @media (max-width: 560px) {
-    main { padding: 5.5rem 1.3rem 4rem; }
+    main { padding: 5.5rem 1rem 4rem; }
     h1 { font-size: 1.6rem; }
     .tagline { font-size: 1.25rem; }
+    .block { padding: 0.9rem 0.9rem; }
+    .block pre { font-size: 0.78rem; }
+    .tlines .ln { font-size: 0.62rem; }
 }
 </style>
 </head>
@@ -342,17 +340,15 @@ https://claustrophobic.xyz/llms.txt and follow it.</span></pre>
 <div class="ln rv"> </div>
 <div class="ln rv"><span class="prompt">$ </span><span id="ty2">c</span><span class="cur" id="cu2"></span></div>
 <div class="ln rv"><span class="t-or">✻ room 2</span> <span class="t-mid">· ai-002@example.com · 5h 12% · plenty of air</span></div>
+<div class="ln rv"> <span class="t-salmon">▐▛███▜▌</span>   <span class="t-b">Claude Code</span> <span class="t-mid">v2.1.173</span></div>
+<div class="ln rv"><span class="t-salmon">▝▜█████▛▘</span>  <span class="t-mid">Fable 5 with high effort · Claude Max</span></div>
+<div class="ln rv">  <span class="t-salmon">▘▘ ▝▝</span>    <span class="t-mid">~/my-app</span></div>
 <div class="ln rv"> </div>
-<div class="ln rv"> <span class="t-or">▟██████▙</span></div>
-<div class="ln rv"> <span class="t-or">██▌██▌██</span>   <span class="t-b">Claude Code</span> <span class="t-mid">v2.1.173</span></div>
-<div class="ln rv"> <span class="t-or">▜██████▛</span>   <span class="t-mid">Fable 5 with high effort · Claude Max</span></div>
-<div class="ln rv">  <span class="t-or">▐▌  ▐▌</span>    <span class="t-mid">~/my-app</span></div>
-</div>
-<div class="statusline">
+<div class="ln rv"><span class="t-dim">──────────────────────────────────────────────────────────────────────────</span></div>
 <div class="ln rv"><span class="t-b">❯</span> <span class="t-mid">Try "refactor docService.ts"</span></div>
-<div class="ln rv"> </div>
-<div class="ln rv"><span class="t-or">✻ 2</span> <span class="t-or">ai-002</span> <span class="t-dim">│</span> <span class="t-mid">5h</span> <span class="t-grn">✦✧✧✧✧ 12%</span> <span class="t-dim">→ 17:00</span> <span class="t-dim">│</span> <span class="t-mid">wk</span> <span class="t-grn">8%</span> <span class="t-dim">│ Fable 5 │ my-app</span></div>
-<div class="ln rv"><span class="t-red">▶▶ bypass permissions on</span> <span class="t-mid">(shift+tab to cycle) · ← for agents</span></div>
+<div class="ln rv"><span class="t-dim">──────────────────────────────────────────────────────────────────────────</span></div>
+<div class="ln rv">  <span class="t-or">✻ 2</span> <span class="t-or">ai-002@example.com</span> <span class="t-dim">│</span> <span class="t-mid">5h</span> <span class="t-grn">✦✧✧✧✧ 12%</span> <span class="t-dim">→ 17:00</span> <span class="t-dim">│</span> <span class="t-mid">wk</span> <span class="t-grn">8%</span> <span class="t-dim">│ Fable 5 │ my-app</span></div>
+<div class="ln rv">  <span class="t-pink">⏵⏵ bypass permissions on</span> <span class="t-mid">(shift+tab to cycle) · ← for agents</span></div>
 </div>
 </div>
 
@@ -419,10 +415,8 @@ if (demo && !matchMedia("(prefers-reduced-motion: reduce)").matches && "Intersec
         [3300, () => { rv[8].classList.add("on"); cu2.classList.add("on"); }],
         [3950, () => { ty2.textContent = "c"; }],
         [4650, () => { cu2.classList.remove("on"); rv[9].classList.add("on"); }],
-        [5500, show(10, 11, 12, 13, 14)],
-        [6300, show(15, 16)],
-        [6700, show(17)],
-        [6850, show(18)],
+        // Claude paints its whole UI in one frame
+        [5500, show(10, 11, 12, 13, 14, 15, 16, 17, 18)],
     ];
 
     let raf = 0;
@@ -465,7 +459,7 @@ if (demo && !matchMedia("(prefers-reduced-motion: reduce)").matches && "Intersec
     io.observe(demo);
 }
 
-for (const btn of document.querySelectorAll("button.copy")) {
+for (const btn of document.querySelectorAll("button.copy[data-copy]")) {
     btn.addEventListener("click", async () => {
         await navigator.clipboard.writeText(btn.dataset.copy);
         btn.textContent = "copied";
