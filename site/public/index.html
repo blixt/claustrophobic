@@ -12,10 +12,10 @@
 <style>
 :root {
     --bg: #161210;
-    --bg-band: #1b1511;
+    --bg-band: #1c1612;
     --bg-raised: #1d1815;
-    --ink: #e8ddd0;
-    --dim: #8d8074;
+    --ink: #ece2d5;
+    --dim: #a09384;
     --faint: #4b4138;
     --crail: #d97757;
     --crail-bright: #e8916f;
@@ -56,21 +56,30 @@ body {
 @media (prefers-reduced-motion: no-preference) {
     /* piecewise-linear approximation of exponential scale, so the walls
        move at constant speed and the loop is seamless (one band pair per
-       cycle: scale ends at 1/q^2 for band ratio q = 1.13) */
-    .tunnel { animation: closein 10s linear infinite; }
+       cycle: scale ends at 1/q^2 for band ratio q = 2) */
+    .tunnel { animation: closein 22s linear infinite; }
     @keyframes closein {
-        0%   { transform: scale(1); }
-        25%  { transform: scale(0.9407); }
-        50%  { transform: scale(0.8849); }
-        75%  { transform: scale(0.8325); }
-        100% { transform: scale(0.7831); }
+        0%    { transform: scale(1); }
+        12.5% { transform: scale(0.8409); }
+        25%   { transform: scale(0.7071); }
+        37.5% { transform: scale(0.5946); }
+        50%   { transform: scale(0.5); }
+        62.5% { transform: scale(0.4204); }
+        75%   { transform: scale(0.3536); }
+        87.5% { transform: scale(0.2973); }
+        100%  { transform: scale(0.25); }
     }
 }
+/* static overlay: the center dissolves into one color (so small rooms never
+   show) and the edges darken. Kept out of the animated layer so the loop
+   stays seamless. */
 .walls::after {
     content: "";
     position: absolute;
     inset: 0;
-    background: radial-gradient(ellipse 120% 90% at 50% 20%, rgba(0,0,0,0) 30%, rgba(10,7,5,0.5) 100%);
+    background:
+        radial-gradient(circle at 50% 50%, #191411 0%, #191411 5%, rgba(25, 20, 17, 0) 42%),
+        radial-gradient(ellipse 120% 90% at 50% 20%, rgba(0,0,0,0) 30%, rgba(10,7,5,0.5) 100%);
 }
 
 main {
@@ -106,6 +115,13 @@ h1 .spark { margin-right: 0.35rem; }
 
 p { color: var(--dim); margin-bottom: 1.2rem; text-wrap: pretty; }
 p strong { color: var(--ink); font-weight: 400; }
+p code, li code, td code {
+    color: var(--ink);
+    background: #251e18;
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    font-size: 0.92em;
+}
 a { color: var(--crail); text-decoration: none; border-bottom: 1px solid rgba(217, 119, 87, 0.35); }
 a:hover { color: var(--crail-bright); border-bottom-color: var(--crail-bright); }
 
@@ -254,10 +270,11 @@ footer {
 <h1><span class="spark">✻</span>Claustrophobic</h1>
 <p class="tagline">for when <em>the walls close in</em>, switch rooms.</p>
 
-<p>A multi-account harness for <strong>Claude Code</strong>. <code>c</code>
-launches Claude on the account with the most air left. Sessions, settings and
-skills are shared between accounts, so switching mid-task is
-<strong>exit, <code>cr</code>, keep going</strong>.</p>
+<p>A multi-account harness for <strong>Claude Code</strong>. Each Claude
+subscription becomes a room, and <code>c</code> opens Claude in the room with
+the most air left. Rooms share sessions and settings, so when one account
+runs dry you exit, type <code>cr</code>, and the same session carries on
+under a fresher one.</p>
 
 <h2 id="install">Install</h2>
 
@@ -340,18 +357,18 @@ run <code>claustrophobic statusline uninstall</code>, delete
 // concentric wall bands, geometrically spaced so the loop is self-similar
 const tunnel = document.querySelector(".tunnel");
 const ns = "http://www.w3.org/2000/svg";
-let s = 2.4;
+let s = 6;
 let i = 0;
-while (s > 0.005) {
+while (s > 0.02) {
     const r = document.createElementNS(ns, "rect");
     const half = 50 * s;
     r.setAttribute("x", 50 - half);
     r.setAttribute("y", 50 - half);
     r.setAttribute("width", half * 2);
     r.setAttribute("height", half * 2);
-    r.setAttribute("fill", i % 2 ? "#161210" : "#1b1511");
+    r.setAttribute("fill", i % 2 ? "#161210" : "#1c1612");
     tunnel.appendChild(r);
-    s /= 1.13;
+    s /= 2;
     i += 1;
 }
 
