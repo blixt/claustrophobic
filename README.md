@@ -16,7 +16,7 @@ official `claude` login. Safe to re-run. The whole tool is one bash script:
 ## Use
 
 ```text
-c                 launch on the airiest room (lowest 5h usage wins)
+c                 launch on the airiest room (coolest of 5h + weekly usage)
 c 2               launch as account 2; same for cr 2, cw 3
 cr [id]           resume any session, from any account
 cw [id]           launch in a git worktree
