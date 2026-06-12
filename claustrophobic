@@ -8,12 +8,13 @@
 #
 set -o pipefail
 
-CLAUSTRO_VERSION="1.0.9"
+CLAUSTRO_VERSION="1.1.0"
 CLAUSTRO_ROOT="$HOME/.claustrophobic"
 CLAUSTRO_BIN="$CLAUSTRO_ROOT/bin/claustrophobic"
 ACCOUNTS_DIR="$CLAUSTRO_ROOT/accounts"
 USAGE_DIR="$CLAUSTRO_ROOT/usage"
 PROFILES_DIR="$CLAUSTRO_ROOT/profiles"
+SWAP_DIR="$CLAUSTRO_ROOT/swap"
 CONFIG_FILE="$CLAUSTRO_ROOT/config"
 CLAUDE_HOME="$HOME/.claude"
 NOW=$(date +%s)
@@ -94,6 +95,7 @@ if op == 'statusline-kv':
             return None
     print('SL_MODEL=' + q(g(d, 'model.display_name')))
     print('SL_CWD=' + q(g(d, 'workspace.current_dir')))
+    print('SL_SESSION_ID=' + q(g(d, 'session_id')))
     print('SL_FIVE_PCT=' + q(pct('five_hour')))
     print('SL_FIVE_RESET=' + q(epoch(g(rl, 'five_hour.resets_at'))))
     print('SL_SEVEN_PCT=' + q(pct('seven_day')))
@@ -188,6 +190,7 @@ if (op === 'statusline-kv') {
     };
     console.log('SL_MODEL=' + q(g(d, 'model.display_name')));
     console.log('SL_CWD=' + q(g(d, 'workspace.current_dir')));
+    console.log('SL_SESSION_ID=' + q(g(d, 'session_id')));
     console.log('SL_FIVE_PCT=' + q(pct('five_hour')));
     console.log('SL_FIVE_RESET=' + q(epoch(g(rl, 'five_hour.resets_at'))));
     console.log('SL_SEVEN_PCT=' + q(pct('seven_day')));
@@ -322,6 +325,7 @@ vibe() { # pct -> VIBE
 
 load_config() {
     CLAUDE_BASE_ARGS='--dangerously-skip-permissions'
+    CLAUSTRO_SWAP_HINT_PCT=90
     [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 }
 
@@ -480,6 +484,34 @@ bootstrap_default_account() {
 
 # ----------------------------------------------------------------- launch ----
 
+wear_room() { # id -> export the env that makes claude run as that room
+    read_account "$1" || return 1
+    export CLAUSTROPHOBIC_ACCOUNT=$1
+    if [ -n "$A_CONFIG_DIR" ]; then
+        export CLAUDE_CONFIG_DIR=$A_CONFIG_DIR
+    else
+        unset CLAUDE_CONFIG_DIR
+    fi
+}
+
+prune_swap_files() { # drop swap state left behind by wrappers that are gone
+    local f pid
+    for f in "$SWAP_DIR"/*.launch; do
+        [ -e "$f" ] || continue
+        WRAPPER_PID=''
+        . "$f" 2>/dev/null || WRAPPER_PID=''
+        pid=$WRAPPER_PID
+        case "$pid" in '' | *[!0-9]*) pid='' ;; esac
+        if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "${f%.launch}.launch" "${f%.launch}.swap" "${f%.launch}.session"
+        fi
+    done
+    for f in "$SWAP_DIR"/*.session "$SWAP_DIR"/*.swap; do
+        [ -e "$f" ] || continue
+        [ -f "${f%.*}.launch" ] || rm -f "$f"
+    done
+}
+
 cmd_launch() {
     local extra_args=() acct='' a
     while [ $# -gt 0 ] && [ "$1" != '--' ]; do
@@ -515,12 +547,7 @@ cmd_launch() {
         read_account "$acct" || die "no such room: $acct"
     fi
 
-    export CLAUSTROPHOBIC_ACCOUNT=$acct
-    if [ -n "$A_CONFIG_DIR" ]; then
-        export CLAUDE_CONFIG_DIR=$A_CONFIG_DIR
-    else
-        unset CLAUDE_CONFIG_DIR
-    fi
+    wear_room "$acct" || die "no such room: $acct"
 
     load_config
     local args=()
@@ -537,7 +564,84 @@ cmd_launch() {
     fi
 
     command -v claude >/dev/null 2>&1 || die "claude CLI not found on PATH"
-    exec claude "${args[@]}" "$@"
+
+    # swap loop: claude runs as a child so /swap (claustrophobic swap-request)
+    # can end it and have us resume the same session as the airiest room
+    mkdir -p "$SWAP_DIR"
+    prune_swap_files
+    export CLAUSTRO_LAUNCH_ID=$$
+    local lbase="$SWAP_DIR/$$" rc=0 sid pick
+    while :; do
+        rm -f "$lbase.swap"
+        printf "WRAPPER_PID='%s'\n" "$$" > "$lbase.launch"
+        claude "${args[@]}" "$@"
+        rc=$?
+        [ -f "$lbase.swap" ] || break
+        SESSION_ID=''
+        . "$lbase.swap"
+        sid=$SESSION_ID
+        case "$sid" in *[!0-9a-fA-F-]*) sid='' ;; esac
+        stty sane 2>/dev/null # claude may not get to restore the tty
+        NOW=$(date +%s)
+        pick=$(autopick) || pick=$CLAUSTROPHOBIC_ACCOUNT
+        wear_room "$pick" || break
+        set --
+        args=()
+        for a in $CLAUDE_BASE_ARGS; do args[${#args[@]}]=$a; done
+        if [ -n "$sid" ]; then
+            args[${#args[@]}]='--resume'
+            args[${#args[@]}]=$sid
+        else
+            args[${#args[@]}]='--continue'
+        fi
+        compute_eff "$pick"
+        local score=$EFF
+        [ "$EFF_WK" -gt "$score" ] && score=$EFF_WK
+        vibe "$score"
+        printf '%s✻ swapped to room %s%s · %s · %s\n' \
+            "$C_OR" "$pick" "$C_RST" "$A_EMAIL" "$VIBE" >&2
+    done
+    rm -f "$lbase.launch" "$lbase.swap" "$lbase.session"
+    exit "$rc"
+}
+
+cmd_swap_request() { # invoked inside claude by /swap; flags the wrapper, ends claude
+    local lid=${CLAUSTRO_LAUNCH_ID:-} lbase cpid
+    if [ -z "$lid" ]; then
+        printf 'Not launched through claustrophobic (c/cr/cw), so there is no wrapper to swap rooms.\n'
+        return 0
+    fi
+    lbase="$SWAP_DIR/$lid"
+    if [ ! -f "$lbase.launch" ]; then
+        printf 'No launch record for this session; cannot swap.\n'
+        return 0
+    fi
+    WRAPPER_PID=''
+    . "$lbase.launch"
+    case "$WRAPPER_PID" in '' | *[!0-9]*)
+        printf 'Corrupt launch record; cannot swap.\n'
+        return 0
+        ;;
+    esac
+    SESSION_ID=''
+    [ -f "$lbase.session" ] && . "$lbase.session"
+    printf "SESSION_ID='%s'\n" "$(sq "$SESSION_ID")" > "$lbase.swap"
+    cpid=$(pgrep -P "$WRAPPER_PID" 2>/dev/null | head -n 1)
+    [ -n "$cpid" ] || cpid=$(ps -axo pid=,ppid= 2>/dev/null | awk -v p="$WRAPPER_PID" '$2 == p { print $1; exit }')
+    printf 'Swap requested: this session restarts on the airiest room momentarily.\n'
+    if [ -n "$cpid" ]; then
+        # escalator first: claude's shutdown may reap us right after the TERM
+        (
+            sleep 2
+            kill -0 "$cpid" 2>/dev/null || exit 0
+            kill -INT "$cpid" 2>/dev/null
+            sleep 0.4
+            kill -INT "$cpid" 2>/dev/null
+            sleep 2
+            kill -0 "$cpid" 2>/dev/null && kill -KILL "$cpid" 2>/dev/null
+        ) >/dev/null 2>&1 &
+        kill -TERM "$cpid" 2>/dev/null
+    fi
 }
 
 # ------------------------------------------------------------- statusline ----
@@ -588,6 +692,41 @@ cmd_statusline_render() {
         cached='~' SL_SEVEN_PCT=0 SL_SEVEN_RESET=''
     fi
 
+    # /swap plumbing: stash the session id where the wrapper can find it,
+    # and offer /swap once this room's hotter meter crosses the threshold
+    local swap_part=''
+    if [[ $id =~ ^[0-9]+$ ]] && [ -n "${CLAUSTRO_LAUNCH_ID:-}" ]; then
+        if [ -n "$SL_SESSION_ID" ]; then
+            local sfile="$SWAP_DIR/$CLAUSTRO_LAUNCH_ID.session" sline scur=''
+            sline="SESSION_ID='$(sq "$SL_SESSION_ID")'"
+            [ -r "$sfile" ] && IFS= read -r scur < "$sfile"
+            if [ "$scur" != "$sline" ]; then
+                mkdir -p "$SWAP_DIR"
+                printf '%s\n' "$sline" > "$sfile"
+            fi
+        fi
+        load_config
+        local hot=''
+        case "$SL_FIVE_PCT" in '' | *[!0-9]*) ;; *) hot=$SL_FIVE_PCT ;; esac
+        case "$SL_SEVEN_PCT" in
+            '' | *[!0-9]*) ;;
+            *) if [ -z "$hot" ] || [ "$SL_SEVEN_PCT" -gt "$hot" ]; then hot=$SL_SEVEN_PCT; fi ;;
+        esac
+        case "$CLAUSTRO_SWAP_HINT_PCT" in '' | *[!0-9]*) hot='' ;; esac
+        if [ -n "$hot" ] && [ "$hot" -ge "$CLAUSTRO_SWAP_HINT_PCT" ]; then
+            local pick pscore
+            pick=$(autopick 2>/dev/null) || pick=''
+            if [ -n "$pick" ] && [ "$pick" != "$id" ]; then
+                compute_eff "$pick"
+                pscore=$EFF
+                [ "$EFF_WK" -gt "$pscore" ] && pscore=$EFF_WK
+                if [ "$pscore" -lt "$hot" ]; then
+                    swap_part="${C_DIM} │ ${C_RST}${C_OR}/swap${C_RST}${C_DIM} → room ${pick}${C_RST}"
+                fi
+            fi
+        fi
+    fi
+
     local sep="${C_DIM} │ ${C_RST}" five wk
     if [ -n "$SL_FIVE_PCT" ]; then
         local reset_part=''
@@ -611,7 +750,7 @@ cmd_statusline_render() {
 
     printf '%s✻ %s%s %s%s%s%s%s%s%s\n' \
         "$C_OR$C_BOLD" "$id" "$C_RST" "$C_OR" "$name" "$C_RST" \
-        "$sep$five" "$sep$wk" "$tail" ''
+        "$sep$five" "$sep$wk" "$swap_part" "$tail"
 }
 
 cmd_statusline_install() {
@@ -827,6 +966,26 @@ install_rc_block() { # rcfile
     note "shell bindings installed in $rc"
 }
 
+install_swap_command() { # /swap slash command; rooms see it via the commands symlink
+    local cmdfile="$CLAUDE_HOME/commands/swap.md"
+    if [ -f "$cmdfile" ] && ! grep -q claustrophobic "$cmdfile" 2>/dev/null; then
+        err "skipped $cmdfile: it exists and isn't ours"
+        return 0
+    fi
+    mkdir -p "$CLAUDE_HOME/commands"
+    cat > "$cmdfile" <<'EOF'
+---
+description: Hop this session to the airiest claustrophobic room
+allowed-tools: Bash(~/.claustrophobic/bin/claustrophobic swap-request)
+disable-model-invocation: true
+---
+
+!`~/.claustrophobic/bin/claustrophobic swap-request`
+
+claustrophobic is restarting this session under another account. Acknowledge in one short line.
+EOF
+}
+
 cmd_install() {
     # check prerequisites before touching anything, especially rc files
     command -v claude >/dev/null 2>&1 || die "install the claude CLI first: https://code.claude.com"
@@ -846,8 +1005,12 @@ cmd_install() {
             printf '# claustrophobic config\n'
             printf '# flags prepended to every claude launch (word-split)\n'
             printf "CLAUDE_BASE_ARGS='--dangerously-skip-permissions'\n"
+            printf '# statusline offers /swap when the hotter meter hits this %% (empty = never)\n'
+            printf "CLAUSTRO_SWAP_HINT_PCT='90'\n"
         } > "$CONFIG_FILE"
     fi
+
+    install_swap_command
 
     [ -f "$HOME/.zshrc" ] || touch "$HOME/.zshrc"
     install_rc_block "$HOME/.zshrc"
@@ -911,15 +1074,20 @@ cmd_help() {
     cl rm <id>            remove a room
     cl relogin <id>       re-authenticate a room
 
+  ${C_BOLD}swapping${C_RST} ${C_DIM}(inside a c/cr/cw session)${C_RST}
+    /swap                 exit + resume this session on the airiest room
+    ! cl swap-request     the same, without the /swap command file
+
   ${C_BOLD}plumbing${C_RST}
     cl setup              interactive first-time setup ${C_DIM}(safe to re-run)${C_RST}
     cl install            non-interactive: bindings + dirs + register login
     cl statusline install|uninstall
     cl help · cl version
 
-  ${C_DIM}switching mid-task: exit claude, then \`cr\`. sessions are shared across
-  rooms, so any account can resume any session. usage data refreshes whenever
-  a room's statusline is on screen; idle rooms show their last known air.${C_RST}
+  ${C_DIM}sessions are shared across rooms, so any account can resume any session
+  (/swap automates exit + cr). the statusline offers /swap once usage hits
+  CLAUSTRO_SWAP_HINT_PCT (default 90, set in ~/.claustrophobic/config).
+  usage data refreshes whenever a room's statusline is on screen.${C_RST}
 
 EOF
 }
@@ -932,6 +1100,7 @@ case "${1:-status}" in
     add)                   cmd_add ;;
     rm|remove)             shift; cmd_rm "$@" ;;
     relogin)               shift; cmd_relogin "$@" ;;
+    swap-request)          cmd_swap_request ;;
     statusline)
         case "${2:-}" in
             install)       cmd_statusline_install ;;
